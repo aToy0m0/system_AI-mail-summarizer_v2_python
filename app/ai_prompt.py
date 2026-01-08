@@ -32,6 +32,16 @@ def build_edit_prompt(
     include_solution: bool,
     include_details: bool,
 ) -> str:
+    # 修正対象フィールドのリストを作成
+    target_fields = []
+    if include_cause:
+        target_fields.append("cause")
+    if include_solution:
+        target_fields.append("solution")
+    if include_details:
+        target_fields.append("details")
+
+    # コンテキスト構築
     parts: list[str] = []
     if include_cause:
         parts.append(f"cause:\n{cause}".strip())
@@ -41,21 +51,39 @@ def build_edit_prompt(
         parts.append(f"details:\n{details}".strip())
     context = "\n\n".join(parts).strip() or "(フォーム内容なし)"
 
-    schema = {"llm_comment": "string", "cause": "string", "solution": "string", "details": "string"}
+    # チェックされたフィールドだけを含むスキーマを動的に構築
+    schema_properties = {"llm_comment": "string"}
+    required_fields = ["llm_comment"]
+
+    if include_cause:
+        schema_properties["cause"] = "string"
+        required_fields.append("cause")
+    if include_solution:
+        schema_properties["solution"] = "string"
+        required_fields.append("solution")
+    if include_details:
+        schema_properties["details"] = "string"
+        required_fields.append("details")
+
+    target_fields_str = "、".join(target_fields) if target_fields else "なし"
+
     return (
         "あなたは業務文書の推敲アシスタントです。\n"
         "以下の「フォーム内容」を参照し、ユーザーの指示に従って修正してください。\n"
+        f"重要: 修正対象フィールドは【{target_fields_str}】のみです。これらのフィールドだけをJSONに含めてください。\n"
         "必ず JSON のみで返してください（前後に説明文は不要）。\n"
-        f"出力スキーマ: {json.dumps(schema, ensure_ascii=False)}\n"
+        f"出力スキーマ: {json.dumps(schema_properties, ensure_ascii=False)}\n"
+        f"必須フィールド: {required_fields}\n"
         "制約:\n"
         "- llm_comment は短く（ユーザー向け補足）\n"
-        "- cause は200文字以内\n"
-        "- solution は200文字以内\n"
-        "- details は制限なし（ただし冗長は避ける）\n"
+        "- cause は200文字以内（修正対象の場合のみ出力）\n"
+        "- solution は200文字以内（修正対象の場合のみ出力）\n"
+        "- details は制限なし（修正対象の場合のみ出力）\n"
+        "- 修正対象でないフィールドはJSONに含めないでください\n"
         "\n"
         f"ユーザー指示:\n{instruction}\n"
         "\n"
-        "フォーム内容:\n"
+        "修正対象フォーム内容:\n"
         "```\n"
         f"{context}\n"
         "```\n"

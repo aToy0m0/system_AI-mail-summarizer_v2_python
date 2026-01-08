@@ -76,11 +76,16 @@ def _extract_llm_comment(answer: str | None) -> str | None:
 
 
 def _apply_parsed_to_form(form: FormState, parsed: dict[str, Any]) -> None:
+    """パース結果をフォームに適用する。parsedに含まれるフィールドのみを更新する。"""
     if "llm_comment" in parsed:
         form.llm_comment = _limit_chars(str(parsed.get("llm_comment") or ""), 400)
-    form.cause = _limit_chars(str(parsed.get("cause") or ""), _CAUSE_MAX_CHARS)
-    form.solution = _limit_chars(str(parsed.get("solution") or ""), _SOLUTION_MAX_CHARS)
-    form.details = str(parsed.get("details") or "")
+    # チェックされたフィールドのみ更新（parsedに含まれている場合のみ）
+    if "cause" in parsed:
+        form.cause = _limit_chars(str(parsed.get("cause") or ""), _CAUSE_MAX_CHARS)
+    if "solution" in parsed:
+        form.solution = _limit_chars(str(parsed.get("solution") or ""), _SOLUTION_MAX_CHARS)
+    if "details" in parsed:
+        form.details = str(parsed.get("details") or "")
 
 
 def _dev_debug_enabled() -> bool:
@@ -313,7 +318,8 @@ def logout(request: Request) -> RedirectResponse:
 def index(request: Request) -> HTMLResponse:
     if _get_user_id(request) is None:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("index.html", {"request": request})
+    log_level = os.getenv("LOG_LEVEL", "info").lower()
+    return templates.TemplateResponse("index.html", {"request": request, "log_level": log_level})
 
 
 @app.get("/api/me")
@@ -970,6 +976,165 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
                 "request_id": getattr(request.state, "request_id", None),
             }
         return result
+
+
+@app.post("/api/pleasanter/save_summary")
+def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    フォームデータを Pleasanter まとめサイト（爺）の説明A/B/Cに保存する。
+
+    リンクチェーン: mail → case (via PLEASANTER_MAIL_LINK_COLUMN) → summary (via PLEASANTER_CASE_LINK_COLUMN)
+    """
+    logger.info(
+        "pleasanter save_summary request received conversation_id=%s",
+        payload.get("conversation_id"),
+        extra={"request_id": getattr(request.state, "request_id", None)},
+    )
+    user_id = _require_user_id(request)
+    _assert_pleasanter_ready()
+
+    if settings.pleasanter_summary_site_id is None:
+        raise HTTPException(status_code=400, detail="PLEASANTER_SUMMARY_SITE_ID is not configured")
+    if settings.pleasanter_case_site_id is None:
+        raise HTTPException(status_code=400, detail="PLEASANTER_CASE_SITE_ID is not configured")
+
+    conversation_id = payload.get("conversation_id")
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    with session_scope() as session:
+        user = session.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=401, detail="not logged in")
+
+        # 会話を取得
+        conv = (
+            session.query(Conversation)
+            .filter(Conversation.user_id == user.id, Conversation.dify_conversation_id == conversation_id)
+            .one_or_none()
+        )
+        if not conv:
+            raise HTTPException(status_code=404, detail="conversation not found")
+
+        if conv.pleasanter_case_result_id is None:
+            raise HTTPException(status_code=400, detail="conversation has no case_result_id")
+
+        case_result_id = conv.pleasanter_case_result_id
+
+        # フォームデータを取得
+        if not conv.form:
+            raise HTTPException(status_code=400, detail="conversation has no form data")
+
+        cause = conv.form.cause or ""
+        solution = conv.form.solution or ""
+        details = conv.form.details or ""
+
+        ple = PleasanterClient(
+            base_url=settings.pleasanter_base_url or "",
+            api_key=settings.pleasanter_api_key or "",
+            api_version=settings.pleasanter_api_version,
+        )
+
+        # 1. case テーブルから summary_result_id を取得
+        logger.info(
+            "pleasanter save_summary: fetching case case_id=%s link_column=%s",
+            case_result_id,
+            settings.pleasanter_case_link_column,
+            extra={"request_id": getattr(request.state, "request_id", None)},
+        )
+        case_view = build_case_view(result_id=case_result_id, link_column=settings.pleasanter_case_link_column)
+        case_resp = ple.get_items(site_id=settings.pleasanter_case_site_id, view=case_view, offset=0, page_size=1)
+
+        if not case_resp.ok:
+            logger.error(
+                "pleasanter save_summary: failed to fetch case error=%s",
+                case_resp.error_message,
+                extra={"request_id": getattr(request.state, "request_id", None)},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Failed to fetch case record from Pleasanter",
+                    "pleasanter_error": case_resp.error_message,
+                }
+            )
+
+        case_items = _extract_items_list(case_resp.data)
+        if not case_items:
+            raise HTTPException(status_code=404, detail=f"Case record {case_result_id} not found")
+
+        case_item = case_items[0]
+        summary_result_id_raw = case_item.get(settings.pleasanter_case_link_column)
+
+        if not summary_result_id_raw:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Case record does not have link to summary (column: {settings.pleasanter_case_link_column})",
+                    "case_result_id": case_result_id,
+                }
+            )
+
+        try:
+            summary_result_id = int(summary_result_id_raw)
+        except Exception:
+            logger.error(
+                "pleasanter save_summary: invalid summary_result_id value=%s",
+                summary_result_id_raw,
+                extra={"request_id": getattr(request.state, "request_id", None)},
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid summary_result_id: {summary_result_id_raw}"
+            )
+
+        # 2. summary テーブルを更新
+        logger.info(
+            "pleasanter save_summary: updating summary summary_id=%s cause_len=%s solution_len=%s details_len=%s",
+            summary_result_id,
+            len(cause),
+            len(solution),
+            len(details),
+            extra={"request_id": getattr(request.state, "request_id", None)},
+        )
+        update_resp = ple.update_item(
+            site_id=settings.pleasanter_summary_site_id,
+            result_id=summary_result_id,
+            fields={
+                "DescriptionA": cause,
+                "DescriptionB": solution,
+                "DescriptionC": details,
+            }
+        )
+
+        if not update_resp.ok:
+            logger.error(
+                "pleasanter save_summary: failed to update summary error=%s",
+                update_resp.error_message,
+                extra={"request_id": getattr(request.state, "request_id", None)},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Failed to update summary record in Pleasanter",
+                    "pleasanter_error": update_resp.error_message,
+                    "summary_result_id": summary_result_id,
+                }
+            )
+
+        logger.info(
+            "pleasanter saved summary case=%s summary=%s",
+            case_result_id,
+            summary_result_id,
+            extra={"request_id": getattr(request.state, "request_id", None)},
+        )
+
+        return {
+            "ok": True,
+            "case_result_id": case_result_id,
+            "summary_result_id": summary_result_id,
+            "message": "まとめサイトに保存しました",
+        }
 
 
 @app.exception_handler(HTTPException)

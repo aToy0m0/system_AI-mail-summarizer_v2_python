@@ -1,9 +1,57 @@
+// ========== ログユーティリティ ==========
+const LOG_LEVELS = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+  none: 999
+};
+
+const currentLogLevel = LOG_LEVELS[window.__LOG_LEVEL__ || 'info'] ?? LOG_LEVELS.info;
+
+function createLogger(module) {
+  const log = (level, levelName, ...args) => {
+    if (LOG_LEVELS[level] < currentLogLevel) return;
+
+    const timestamp = new Date().toISOString().substring(11, 23); // HH:mm:ss.SSS
+    const prefix = `[${timestamp}] [${module}] [${levelName.toUpperCase()}]`;
+
+    const consoleMethod = level === 'error' ? console.error :
+                         level === 'warn' ? console.warn :
+                         level === 'debug' ? console.debug :
+                         console.log;
+
+    consoleMethod(prefix, ...args);
+  };
+
+  return {
+    debug: (...args) => log('debug', 'debug', ...args),
+    info: (...args) => log('info', 'info', ...args),
+    warn: (...args) => log('warn', 'warn', ...args),
+    error: (...args) => log('error', 'error', ...args),
+  };
+}
+
+// モジュールごとのロガー
+const loggers = {
+  app: createLogger('app'),
+  api: createLogger('api'),
+  chat: createLogger('chat'),
+  form: createLogger('form'),
+  pleasanter: createLogger('pleasanter'),
+  ui: createLogger('ui'),
+};
+
+// ========== アプリケーションコード ==========
 let currentConversationId = '';
 
 const meEl = document.getElementById('me');
 const conversationsEl = document.getElementById('conversations');
 const statusEl = document.getElementById('status');
 const statusTextEl = statusEl?.querySelector('.status-text');
+const statusDetailEl = document.getElementById('statusDetail');
+const progressBarEl = document.getElementById('progressBar');
+const progressFillEl = document.getElementById('progressFill');
 const debugEl = document.getElementById('debug');
 
 const emailTextEl = document.getElementById('emailText');
@@ -20,7 +68,10 @@ const includeSolutionEl = document.getElementById('includeSolution');
 const includeDetailsEl = document.getElementById('includeDetails');
 const saveFormBtn = document.getElementById('saveForm');
 
-const chatWidgetEl = document.getElementById('chatWidget');
+const chatMessagesEl = document.getElementById('chatMessages');
+const chatInputEl = document.getElementById('chatInput');
+const chatSendBtn = document.getElementById('chatSend');
+const clearChatBtn = document.getElementById('clearChat');
 const sidebarToggleEl = document.getElementById('sidebarToggle');
 const sidebarBackdropEl = document.getElementById('sidebarBackdrop');
 const tabMailBtn = document.getElementById('tabMail');
@@ -38,16 +89,228 @@ const caseUrlEl = document.getElementById('caseUrl');
 const caseUrlApplyEl = document.getElementById('caseUrlApply');
 const caseInfoEl = document.getElementById('caseInfo');
 
-function setStatus(msg, state = 'idle') {
+function setStatus(msg, state = 'idle', detail = '', progress = null) {
   if (statusEl) statusEl.dataset.state = state;
   if (statusTextEl) {
     statusTextEl.textContent = msg || '';
   }
+  if (statusDetailEl) {
+    statusDetailEl.textContent = detail || '';
+  }
+
+  // プログレスバーの表示・非表示
+  if (progressBarEl && progressFillEl) {
+    if (progress !== null && progress >= 0) {
+      progressBarEl.style.display = 'block';
+      progressFillEl.style.width = `${Math.min(100, Math.max(0, progress))}%`;
+    } else {
+      progressBarEl.style.display = 'none';
+      progressFillEl.style.width = '0%';
+    }
+  }
 }
 
+// ステータスのヘルパー関数
+const Status = {
+  idle: (msg = '準備完了', detail = '') => setStatus(msg, 'idle', detail),
+  loading: (msg, detail = '', progress = null) => setStatus(msg, 'loading', detail, progress),
+  success: (msg, detail = '') => setStatus(msg, 'success', detail),
+  error: (msg, detail = '') => setStatus(msg, 'error', detail),
+  warning: (msg, detail = '') => setStatus(msg, 'warning', detail),
+  info: (msg, detail = '') => setStatus(msg, 'info', detail),
+};
+
+// チャット機能
 function clearChat() {
-  if (chatWidgetEl) {
-    chatWidgetEl.removeAttribute('api-endpoint');
+  if (chatMessagesEl) {
+    chatMessagesEl.innerHTML = `
+      <div class="chat-empty">
+        <span class="material-icons">chat_bubble_outline</span>
+        <p>AIと会話を開始します</p>
+      </div>
+    `;
+  }
+  if (chatInputEl) {
+    chatInputEl.value = '';
+    chatInputEl.disabled = true;
+  }
+  if (chatSendBtn) {
+    chatSendBtn.disabled = true;
+  }
+}
+
+function scrollChatToBottom() {
+  if (chatMessagesEl) {
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp * 1000);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+
+  if (isToday) {
+    return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function addChatMessage(role, content, timestamp) {
+  if (!chatMessagesEl) return;
+
+  // 空のメッセージ表示を削除
+  const emptyEl = chatMessagesEl.querySelector('.chat-empty');
+  if (emptyEl) {
+    emptyEl.remove();
+  }
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `chat-message ${role}`;
+
+  const avatarDiv = document.createElement('div');
+  avatarDiv.className = 'chat-avatar';
+  avatarDiv.textContent = role === 'user' ? 'U' : 'AI';
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'chat-message-content';
+
+  const metaDiv = document.createElement('div');
+  metaDiv.className = 'chat-message-meta';
+  metaDiv.textContent = formatTime(timestamp);
+
+  const bubbleDiv = document.createElement('div');
+  bubbleDiv.className = 'chat-message-bubble';
+  bubbleDiv.textContent = content;
+
+  contentDiv.appendChild(metaDiv);
+  contentDiv.appendChild(bubbleDiv);
+
+  messageDiv.appendChild(avatarDiv);
+  messageDiv.appendChild(contentDiv);
+
+  chatMessagesEl.appendChild(messageDiv);
+  scrollChatToBottom();
+}
+
+function addTypingIndicator() {
+  if (!chatMessagesEl) return;
+
+  const emptyEl = chatMessagesEl.querySelector('.chat-empty');
+  if (emptyEl) {
+    emptyEl.remove();
+  }
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message assistant typing';
+  messageDiv.id = 'typing-indicator';
+
+  const avatarDiv = document.createElement('div');
+  avatarDiv.className = 'chat-avatar';
+  avatarDiv.textContent = 'AI';
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'chat-message-content';
+
+  const bubbleDiv = document.createElement('div');
+  bubbleDiv.className = 'chat-message-bubble';
+  bubbleDiv.innerHTML = `
+    <div class="typing-indicator">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>
+  `;
+
+  contentDiv.appendChild(bubbleDiv);
+  messageDiv.appendChild(avatarDiv);
+  messageDiv.appendChild(contentDiv);
+
+  chatMessagesEl.appendChild(messageDiv);
+  scrollChatToBottom();
+}
+
+function removeTypingIndicator() {
+  const indicator = document.getElementById('typing-indicator');
+  if (indicator) {
+    indicator.remove();
+  }
+}
+
+async function loadChatMessages() {
+  if (!currentConversationId || !chatMessagesEl) {
+    clearChat();
+    return;
+  }
+
+  try {
+    const data = await api(`/api/chat-ui?conversation_id=${encodeURIComponent(currentConversationId)}`);
+
+    chatMessagesEl.innerHTML = '';
+
+    if (!data.messages || data.messages.length === 0) {
+      chatMessagesEl.innerHTML = `
+        <div class="chat-empty">
+          <span class="material-icons">chat_bubble_outline</span>
+          <p>AIと会話を開始します</p>
+        </div>
+      `;
+    } else {
+      for (const msg of data.messages) {
+        addChatMessage(msg.role, msg.content, msg.created_at);
+      }
+    }
+
+    if (chatInputEl) chatInputEl.disabled = false;
+    if (chatSendBtn) chatSendBtn.disabled = chatInputEl.value.trim() === '';
+  } catch (e) {
+    loggers.chat.error('Failed to load chat messages:', e);
+    clearChat();
+  }
+}
+
+async function sendChatMessage() {
+  if (!currentConversationId || !chatInputEl) return;
+
+  const text = chatInputEl.value.trim();
+  if (!text) return;
+
+  // ユーザーメッセージを表示
+  addChatMessage('user', text, Date.now() / 1000);
+  chatInputEl.value = '';
+  chatInputEl.disabled = true;
+  chatSendBtn.disabled = true;
+
+  // タイピングインジケーターを表示
+  addTypingIndicator();
+
+  try {
+    const data = await api('/api/chat-ui', {
+      method: 'POST',
+      body: JSON.stringify({
+        conversation_id: currentConversationId,
+        message: text
+      })
+    });
+
+    removeTypingIndicator();
+
+    const response = data.message || data.answer || '';
+    if (response) {
+      addChatMessage('assistant', response, Date.now() / 1000);
+    }
+
+    // フォームを再読み込み（AIが更新した可能性があるため）
+    await loadForm();
+    await refreshConversations();
+  } catch (e) {
+    removeTypingIndicator();
+    addChatMessage('assistant', `エラー: ${e.message}`, Date.now() / 1000);
+  } finally {
+    chatInputEl.disabled = false;
+    chatInputEl.focus();
+    updateChatSendButton();
   }
 }
 
@@ -110,16 +373,14 @@ async function api(path, options = {}) {
     request_body_preview: bodyText ? bodyText.slice(0, 600) + (bodyText.length > 600 ? '…' : '') : undefined
   };
 
-  // 開発者ツールでの切り分けをしやすくするため、
-  // 1) オブジェクト形式（展開して見やすい）
-  // 2) JSON文字列（そのままコピペしやすい）
-  // の両方を出す。最後のレスポンスは window.__lastApi に保存する。
   const last = { meta, data };
   window.__lastApi = last;
-  console.debug('[api]', meta, data);
+
+  loggers.api.debug(`${method} ${path} ${res.status} (${meta.ms}ms)`, meta, data);
+
   try {
     const json = JSON.stringify(last);
-    console.log('[api-json]', json.length > 12000 ? json.slice(0, 12000) + '…' : json);
+    loggers.api.debug(`Response JSON:`, json.length > 12000 ? json.slice(0, 12000) + '…' : json);
   } catch {
     // ignore
   }
@@ -181,13 +442,14 @@ function clearForm() {
   includeDetailsEl.checked = true;
 }
 
-function updateChatEndpoint() {
-  if (!chatWidgetEl) return;
-  if (!currentConversationId) {
-    chatWidgetEl.removeAttribute('api-endpoint');
-    return;
+async function updateChatEndpoint() {
+  await loadChatMessages();
+}
+
+function updateChatSendButton() {
+  if (chatSendBtn && chatInputEl) {
+    chatSendBtn.disabled = !currentConversationId || chatInputEl.value.trim() === '';
   }
-  chatWidgetEl.setAttribute('api-endpoint', `/api/chat-ui?conversation_id=${encodeURIComponent(currentConversationId)}`);
 }
 
 function setCaseInfo(item) {
@@ -254,17 +516,19 @@ async function createConversation() {
   clearForm();
   clearChat();
   await refreshConversations();
-  setStatus('新規会話を開始しました', 'success');
+  Status.success('新規会話を開始しました');
 }
 
 async function summarizeEmail() {
   const email_text = String(emailTextEl.value || '').trim();
   if (!email_text) return;
   setTab('summary');
+  Status.loading('AI要約中...', 'メール本文を解析しています', 30);
   const data = await api('/api/summarize_email', {
     method: 'POST',
     body: JSON.stringify({ email_text, conversation_id: currentConversationId || '' })
   });
+  Status.loading('AI要約中...', 'フォームに反映しています', 80);
   currentConversationId = data.conversation_id;
   if (data.parsed) {
     causeEl.value = data.parsed.cause || '';
@@ -274,7 +538,7 @@ async function summarizeEmail() {
   await refreshConversations();
   await loadForm();
   updateChatEndpoint();
-  setStatus(`要約しました: ${currentConversationId}`);
+  Status.success('要約完了', `会話ID: ${currentConversationId.substring(0, 8)}...`);
 }
 
 async function summarizeFromPleasanter(caseIdOverride = '') {
@@ -282,10 +546,12 @@ async function summarizeFromPleasanter(caseIdOverride = '') {
   if (!case_result_id) throw new Error('案件IDを入力してください');
   caseIdEl.value = case_result_id;
   setTab('summary');
+  Status.loading('Pleasanter取得中...', `案件 ${case_result_id} のメールを取得しています`, 20);
   const data = await api('/api/pleasanter/summarize_case', {
     method: 'POST',
     body: JSON.stringify({ case_result_id })
   });
+  Status.loading('AI要約中...', `${data.emails_total || 0}件のメールを解析しています`, 60);
   currentConversationId = data.conversation_id;
   if (data.parsed) {
     causeEl.value = data.parsed.cause || '';
@@ -295,16 +561,16 @@ async function summarizeFromPleasanter(caseIdOverride = '') {
   await refreshConversations();
   await loadForm();
   updateChatEndpoint();
-  setStatus(`Pleasanterから要約しました: 案件 ${data.case_result_id} / ${currentConversationId}`);
+  Status.success('Pleasanter要約完了', `案件 ${data.case_result_id} / ${data.emails_total || 0}件のメールを処理`);
 }
 
 newConversationBtn.addEventListener('click', async () => {
   setBusy(true);
-  setStatus('新規会話作成中…', 'loading');
+  Status.loading('新規会話作成中...', '会話データを初期化しています');
   try {
     await createConversation();
   } catch (e) {
-    setStatus(`エラー: ${e.message}`, 'error');
+    Status.error('新規会話作成エラー', e.message);
   } finally {
     setBusy(false);
   }
@@ -312,24 +578,46 @@ newConversationBtn.addEventListener('click', async () => {
 
 summarizeBtn.addEventListener('click', async () => {
   setBusy(true);
-  setStatus('要約中…', 'loading');
+  Status.loading('要約準備中...', 'メール本文を読み込んでいます', 10);
   try {
     await summarizeEmail();
   } catch (e) {
-    setStatus(`エラー: ${e.message}`, 'error');
+    Status.error('要約エラー', e.message);
   } finally {
     setBusy(false);
   }
 });
 
 saveFormBtn.addEventListener('click', async () => {
+  if (!currentConversationId) {
+    Status.error('保存エラー', '会話を選択してください');
+    return;
+  }
   setBusy(true);
-  setStatus('保存中…', 'loading');
+  loggers.form.info('Starting save process, conversation_id:', currentConversationId);
+  Status.loading('保存中...', 'フォームデータを送信しています', 30);
   try {
+    // 1. ローカルDB保存
+    loggers.form.info('Step 1: Saving to local DB');
     await saveForm();
-    setStatus('保存しました', 'success');
+    loggers.form.info('Step 1 complete');
+    Status.loading('保存中...', 'Pleasanterに書き込んでいます', 70);
+
+    // 2. Pleasanterまとめサイトに保存
+    loggers.pleasanter.info('Step 2: Saving to Pleasanter summary site');
+    const result = await api('/api/pleasanter/save_summary', {
+      method: 'POST',
+      body: JSON.stringify({
+        conversation_id: currentConversationId
+      })
+    });
+    loggers.pleasanter.info('Step 2 complete, result:', result);
+
+    Status.success('保存完了', result.message || 'まとめサイトに保存しました');
   } catch (e) {
-    setStatus(`エラー: ${e.message}`, 'error');
+    loggers.form.error('Save error:', e);
+    loggers.form.error('Error details:', e.meta, e.data);
+    Status.error('保存エラー', e.message);
   } finally {
     setBusy(false);
   }
@@ -337,30 +625,37 @@ saveFormBtn.addEventListener('click', async () => {
 
 fetchFromPleasanterBtn.addEventListener('click', async () => {
   setBusy(true);
-  setStatus('Pleasanter取得中…', 'loading');
+  Status.loading('Pleasanter接続中...', 'APIに接続しています', 5);
   try {
     await summarizeFromPleasanter();
   } catch (e) {
-    setStatus(`エラー: ${e.message}`, 'error');
+    Status.error('Pleasanter取得エラー', e.message);
   } finally {
     setBusy(false);
   }
 });
 
 (async function init() {
+  loggers.app.info('Application initializing, log level:', window.__LOG_LEVEL__);
   try {
+    Status.loading('初期化中...', 'ユーザー情報を読み込んでいます', 20);
     await loadMe();
+    Status.loading('初期化中...', '会話履歴を読み込んでいます', 50);
     await refreshConversations();
-    setStatus('準備OK', 'success');
+    Status.loading('初期化中...', '案件一覧を読み込んでいます', 80);
     setTab('mail');
     setMailMode('pleasanter');
     try {
       await loadCases();
+      Status.success('準備完了', 'すべてのデータを読み込みました');
+      loggers.app.info('Application initialization complete');
     } catch (err) {
-      setStatus(`案件一覧の取得に失敗しました: ${err.message}`, 'error');
+      Status.warning('一部エラー', `案件一覧の取得に失敗: ${err.message}`);
+      loggers.app.warn('Failed to load cases:', err);
     }
   } catch (e) {
-    setStatus(`初期化エラー: ${e.message}`, 'error');
+    Status.error('初期化エラー', e.message);
+    loggers.app.error('Application initialization failed:', e);
   }
 })();
 
@@ -394,9 +689,11 @@ if (caseSearchEl) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(async () => {
       try {
+        Status.loading('案件検索中...', `"${value}" で検索しています`, 30);
         await loadCases(value);
+        Status.success('検索完了', '案件一覧を更新しました');
       } catch (err) {
-        setStatus(`案件検索エラー: ${err.message}`, 'error');
+        Status.error('案件検索エラー', err.message);
       }
     }, 300);
   });
@@ -407,29 +704,94 @@ if (caseUrlApplyEl) {
     const raw = String(caseUrlEl?.value || '').trim();
     const caseId = extractCaseIdFromUrl(raw);
     if (!caseId) {
-      setStatus('案件URLからIDを抽出できませんでした', 'error');
+      Status.error('URL解析エラー', '案件URLからIDを抽出できませんでした');
       return;
     }
     setBusy(true);
-    setStatus('案件URLを確認中…', 'loading');
+    Status.loading('案件URL確認中...', `案件ID ${caseId} を検証しています`, 30);
     try {
       const item = await validateCaseId(caseId);
       setCaseInfo(item);
       await summarizeFromPleasanter(String(item.result_id || caseId));
     } catch (e) {
-      setStatus(`案件URLエラー: ${e.message}`, 'error');
+      Status.error('案件URLエラー', e.message);
     } finally {
       setBusy(false);
     }
   });
 }
 
-if (chatWidgetEl) {
-  chatWidgetEl.addEventListener('message-received', async () => {
-    try {
-      await refreshConversations();
-    } catch {
-      // ignore
+// チャット入力のイベントリスナー
+if (chatInputEl) {
+  chatInputEl.addEventListener('input', () => {
+    updateChatSendButton();
+    // 自動でtextareaの高さを調整
+    chatInputEl.style.height = 'auto';
+    chatInputEl.style.height = Math.min(chatInputEl.scrollHeight, 120) + 'px';
+  });
+
+  chatInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!chatSendBtn.disabled) {
+        sendChatMessage();
+      }
     }
+  });
+}
+
+if (chatSendBtn) {
+  chatSendBtn.addEventListener('click', () => {
+    sendChatMessage();
+  });
+}
+
+if (clearChatBtn) {
+  clearChatBtn.addEventListener('click', async () => {
+    if (confirm('会話履歴をクリアしますか?')) {
+      await createConversation();
+    }
+  });
+}
+
+// チェックボックスの変更を自動保存
+async function autoSaveCheckboxes() {
+  if (!currentConversationId) return;
+  try {
+    loggers.form.debug('Auto-saving checkbox state');
+    await api('/api/form/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        conversation_id: currentConversationId,
+        cause: causeEl.value,
+        solution: solutionEl.value,
+        details: detailsEl.value,
+        include_cause: includeCauseEl.checked,
+        include_solution: includeSolutionEl.checked,
+        include_details: includeDetailsEl.checked
+      })
+    });
+    loggers.form.debug('Auto-save complete');
+  } catch (e) {
+    loggers.form.error('Failed to auto-save checkboxes:', e);
+  }
+}
+
+// チェックボックスの変更イベント
+if (includeCauseEl) {
+  includeCauseEl.addEventListener('change', () => {
+    autoSaveCheckboxes();
+  });
+}
+
+if (includeSolutionEl) {
+  includeSolutionEl.addEventListener('change', () => {
+    autoSaveCheckboxes();
+  });
+}
+
+if (includeDetailsEl) {
+  includeDetailsEl.addEventListener('change', () => {
+    autoSaveCheckboxes();
   });
 }

@@ -74,8 +74,10 @@ class Settings:
     pleasanter_api_key: str | None
     pleasanter_api_version: str
 
+    pleasanter_summary_site_id: int | None
     pleasanter_case_site_id: int | None
     pleasanter_mail_site_id: int | None
+    pleasanter_case_link_column: str
     pleasanter_mail_link_column: str
     pleasanter_mail_body_column: str
 
@@ -98,9 +100,11 @@ class Settings:
         self.pleasanter_api_key = os.getenv("PLEASANTER_API_KEY") or None
         self.pleasanter_api_version = os.getenv("PLEASANTER_API_VERSION", "1.1")
 
+        self.pleasanter_summary_site_id = _maybe_int(os.getenv("PLEASANTER_SUMMARY_SITE_ID"))
         self.pleasanter_case_site_id = _maybe_int(os.getenv("PLEASANTER_CASE_SITE_ID"))
         self.pleasanter_mail_site_id = _maybe_int(os.getenv("PLEASANTER_MAIL_SITE_ID"))
-        self.pleasanter_mail_link_column = os.getenv("PLEASANTER_MAIL_LINK_COLUMN", "ClassA")
+        self.pleasanter_case_link_column = os.getenv("PLEASANTER_CASE_LINK_COLUMN", "ClassA")
+        self.pleasanter_mail_link_column = os.getenv("PLEASANTER_MAIL_LINK_COLUMN", "ClassD")
         self.pleasanter_mail_body_column = os.getenv("PLEASANTER_MAIL_BODY_COLUMN", "Body")
 
 

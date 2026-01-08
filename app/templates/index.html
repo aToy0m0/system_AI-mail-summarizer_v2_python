@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>dify-connector</title>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
-    <link rel="stylesheet" href="https://unpkg.com/@clappit/chat-element@0.1.1/dist/clappit-element/clappit-chat.css" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body class="sidebar-collapsed">
@@ -37,7 +36,13 @@
           <div class="status-left">
             <div class="status" id="status" data-state="idle">
               <span class="spinner" aria-hidden="true"></span>
-              <span class="status-text"></span>
+              <div class="status-content">
+                <span class="status-text"></span>
+                <span class="status-detail" id="statusDetail"></span>
+              </div>
+            </div>
+            <div class="progress-bar" id="progressBar" style="display: none;">
+              <div class="progress-fill" id="progressFill"></div>
             </div>
           </div>
           <div class="status-right">
@@ -123,25 +128,42 @@
               </div>
             </div>
 
-            <div class="card">
-              <h2>会話履歴</h2>
-              <clappit-chat
-                id="chatWidget"
-                title="AIへ追加指示"
-                primary-color="#3aa1ff"
-                secondary-color="#5c7aa2"
-                accent-color="#1c7fe6"
-                background-color="#ffffff"
-                text-color="#1c2a3a"
-                font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', 'Apple Color Emoji', 'Segoe UI Emoji'"
-              ></clappit-chat>
+            <div class="card chat-card">
+              <div class="chat-header">
+                <h2>会話履歴</h2>
+                <button id="clearChat" class="icon-btn" title="会話をクリア">
+                  <span class="material-icons">delete_outline</span>
+                </button>
+              </div>
+              <div class="chat-container" id="chatContainer">
+                <div class="chat-messages" id="chatMessages">
+                  <div class="chat-empty">
+                    <span class="material-icons">chat_bubble_outline</span>
+                    <p>AIと会話を開始します</p>
+                  </div>
+                </div>
+              </div>
+              <div class="chat-input-area">
+                <textarea
+                  id="chatInput"
+                  class="chat-input"
+                  placeholder="AIへ追加指示を入力..."
+                  rows="1"
+                ></textarea>
+                <button id="chatSend" class="chat-send-btn" disabled>
+                  <span class="material-icons">send</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </section>
     </main>
 
-    <script src="https://unpkg.com/@clappit/chat-element@0.1.1/dist/clappit-element/clappit-chat.js"></script>
-    <script src="/static/app.js"></script>
+    <script>
+      // ログレベル設定
+      window.__LOG_LEVEL__ = '{{ log_level }}';
+    </script>
+    <script src="/static/app.js?v=20260108"></script>
   </body>
 </html>

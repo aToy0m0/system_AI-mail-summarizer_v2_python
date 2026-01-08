@@ -24,6 +24,75 @@ class PleasanterClient:
     api_key: str
     api_version: str = "1.1"
 
+    def update_item(
+        self,
+        *,
+        site_id: int,
+        result_id: int,
+        fields: dict[str, Any],
+        timeout_s: float = 30.0,
+    ) -> PleasanterApiResponse:
+        """
+        Pleasanter レコードを更新する。
+
+        マニュアル: https://pleasanter.org/manual/api-update
+        POST /api/items/{result_id}/update
+        """
+        url = f"{self.base_url.rstrip('/')}/api/items/{result_id}/update"
+        payload: dict[str, Any] = {
+            "ApiVersion": _to_number_if_possible(self.api_version),
+            "ApiKey": self.api_key,
+        }
+        payload.update(fields)
+
+        with httpx.Client(timeout=timeout_s) as client:
+            try:
+                resp = client.post(url, json=payload)
+            except httpx.ConnectError as e:
+                return PleasanterApiResponse(
+                    request_url=url,
+                    request_payload=payload,
+                    status_code=0,
+                    ok=False,
+                    error_message=f"ConnectError: {e}",
+                    text="",
+                    data={"exception": "ConnectError", "message": str(e)},
+                )
+            except httpx.TimeoutException as e:
+                return PleasanterApiResponse(
+                    request_url=url,
+                    request_payload=payload,
+                    status_code=0,
+                    ok=False,
+                    error_message=f"Timeout: {e}",
+                    text="",
+                    data={"exception": "Timeout", "message": str(e)},
+                )
+            text = resp.text
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": text}
+
+            error_message: str | None = None
+            ok = True
+            if resp.status_code >= 400:
+                ok = False
+                error_message = f"HTTP status={resp.status_code}"
+            if isinstance(data, dict) and "StatusCode" in data and data.get("StatusCode") != 200:
+                ok = False
+                msg = data.get("Message") or data.get("ErrorMessage") or data.get("raw") or "Unknown error"
+                error_message = f"StatusCode={data.get('StatusCode')} message={msg}"
+            return PleasanterApiResponse(
+                request_url=url,
+                request_payload=payload,
+                status_code=resp.status_code,
+                ok=ok,
+                error_message=error_message,
+                text=text,
+                data=data,
+            )
+
     def get_items(
         self,
         *,
@@ -133,17 +202,22 @@ def build_mail_view(*, link_column: str, case_result_id: int, body_column: str) 
     }
 
 
-def build_case_view(*, result_id: int | None = None) -> dict[str, Any]:
+def build_case_view(*, result_id: int | None = None, link_column: str | None = None) -> dict[str, Any]:
     """
     親（案件）テーブル取得API向けの View。
     - ResultId/Title/UpdatedTime を取得
     - ResultId での検証用に ExactMatch を使用
+    - link_column が指定された場合はそれも GridColumns に追加
     """
+
+    grid_columns = ["ResultId", "Title", "UpdatedTime"]
+    if link_column and link_column not in grid_columns:
+        grid_columns.append(link_column)
 
     view: dict[str, Any] = {
         "ApiDataType": "KeyValues",
         "ApiColumnKeyDisplayType": "ColumnName",
-        "GridColumns": ["ResultId", "Title", "UpdatedTime"],
+        "GridColumns": grid_columns,
         "ColumnSorterHash": {"UpdatedTime": "desc"},
     }
     if result_id is not None:

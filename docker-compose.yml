@@ -19,7 +19,7 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-app}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-app}"
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
