@@ -80,6 +80,10 @@ class Settings:
     pleasanter_case_link_column: str
     pleasanter_mail_link_column: str
     pleasanter_mail_body_column: str
+    pleasanter_case_summary_column: str
+    pleasanter_case_cause_column: str
+    pleasanter_case_action_column: str
+    pleasanter_case_body_column: str
 
     def __init__(self) -> None:
         self.app_env = os.getenv("APP_ENV", "dev")
@@ -106,6 +110,10 @@ class Settings:
         self.pleasanter_case_link_column = os.getenv("PLEASANTER_CASE_LINK_COLUMN", "ClassA")
         self.pleasanter_mail_link_column = os.getenv("PLEASANTER_MAIL_LINK_COLUMN", "ClassD")
         self.pleasanter_mail_body_column = os.getenv("PLEASANTER_MAIL_BODY_COLUMN", "Body")
+        self.pleasanter_case_summary_column = os.getenv("PLEASANTER_CASE_SUMMARY_COLUMN", "DescriptionA")
+        self.pleasanter_case_cause_column = os.getenv("PLEASANTER_CASE_CAUSE_COLUMN", "DescriptionB")
+        self.pleasanter_case_action_column = os.getenv("PLEASANTER_CASE_ACTION_COLUMN", "DescriptionC")
+        self.pleasanter_case_body_column = os.getenv("PLEASANTER_CASE_BODY_COLUMN", "Body")
 
 
 _load_dotenv_if_present()

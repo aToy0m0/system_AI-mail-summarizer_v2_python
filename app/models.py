@@ -54,15 +54,15 @@ class FormState(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), nullable=False, unique=True, index=True)
 
+    summary: Mapped[str] = mapped_column(String(400), default="", nullable=False)
     cause: Mapped[str] = mapped_column(String(400), default="", nullable=False)
-    solution: Mapped[str] = mapped_column(String(400), default="", nullable=False)
-    details: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    llm_comment: Mapped[str] = mapped_column(String(400), default="", nullable=False)
-    ai_response: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    action: Mapped[str] = mapped_column(String(400), default="", nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
+    include_summary: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     include_cause: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    include_solution: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    include_details: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    include_action: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    include_body: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),

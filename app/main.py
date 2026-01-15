@@ -30,8 +30,9 @@ app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 templates = Jinja2Templates(directory="app/templates")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+_SUMMARY_MAX_CHARS = 200
 _CAUSE_MAX_CHARS = 200
-_SOLUTION_MAX_CHARS = 200
+_ACTION_MAX_CHARS = 200
 
 logger = logging.getLogger(" Pleasanterメール要約")
 
@@ -75,17 +76,59 @@ def _extract_llm_comment(answer: str | None) -> str | None:
     return None
 
 
+def _extract_user_message(query: str | None) -> str | None:
+    """
+    Difyの会話履歴から「ユーザー発言」として表示したい短いテキストを取り出す。
+    - プロンプト先頭に埋め込んだマーカー（<<<USER_MESSAGE_BEGIN>>> ... <<<USER_MESSAGE_END>>>）があればそれを優先
+    - マーカーが無ければ、短いテキストのみ返す（長いプロンプトはUIに出さない）
+    """
+    if not isinstance(query, str):
+        return None
+    q = query.strip()
+    if not q:
+        return None
+
+    begin = "<<<USER_MESSAGE_BEGIN>>>"
+    end = "<<<USER_MESSAGE_END>>>"
+    b = q.find(begin)
+    if b != -1:
+        b2 = b + len(begin)
+        e = q.find(end, b2)
+        if e != -1:
+            msg = q[b2:e].strip()
+            return msg if msg else None
+
+    # フォールバック: プロンプト全文が表示されるのを避ける
+    return q if len(q) <= 160 else None
+
+
 def _apply_parsed_to_form(form: FormState, parsed: dict[str, Any]) -> None:
     """パース結果をフォームに適用する。parsedに含まれるフィールドのみを更新する。"""
-    if "llm_comment" in parsed:
-        form.llm_comment = _limit_chars(str(parsed.get("llm_comment") or ""), 400)
-    # チェックされたフィールドのみ更新（parsedに含まれている場合のみ）
-    if "cause" in parsed:
-        form.cause = _limit_chars(str(parsed.get("cause") or ""), _CAUSE_MAX_CHARS)
-    if "solution" in parsed:
-        form.solution = _limit_chars(str(parsed.get("solution") or ""), _SOLUTION_MAX_CHARS)
-    if "details" in parsed:
-        form.details = str(parsed.get("details") or "")
+    # 新スキーマ（Pleasanter物理名）を優先しつつ、旧スキーマ（cause/solution/details）も吸収する
+    summary_keys = [settings.pleasanter_case_summary_column, "summary", "overview", "DescriptionA"]
+    cause_keys = [settings.pleasanter_case_cause_column, "cause", "DescriptionB"]
+    action_keys = [settings.pleasanter_case_action_column, "action", "solution", "DescriptionC"]
+    body_keys = [settings.pleasanter_case_body_column, "body", "details", "Body"]
+
+    def pick(keys: list[str]) -> tuple[bool, str]:
+        for k in keys:
+            if k in parsed:
+                return True, str(parsed.get(k) or "")
+        return False, ""
+
+    has_summary, summary = pick(summary_keys)
+    has_cause, cause = pick(cause_keys)
+    has_action, action = pick(action_keys)
+    has_body, body = pick(body_keys)
+
+    if has_summary:
+        form.summary = _limit_chars(summary, _SUMMARY_MAX_CHARS)
+    if has_cause:
+        form.cause = _limit_chars(cause, _CAUSE_MAX_CHARS)
+    if has_action:
+        form.action = _limit_chars(action, _ACTION_MAX_CHARS)
+    if has_body:
+        form.body = body
 
 
 def _dev_debug_enabled() -> bool:
@@ -319,7 +362,17 @@ def index(request: Request) -> HTMLResponse:
     if _get_user_id(request) is None:
         return RedirectResponse(url="/login", status_code=303)
     log_level = os.getenv("LOG_LEVEL", "info").lower()
-    return templates.TemplateResponse("index.html", {"request": request, "log_level": log_level})
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "log_level": log_level,
+            "case_summary_column": settings.pleasanter_case_summary_column,
+            "case_cause_column": settings.pleasanter_case_cause_column,
+            "case_action_column": settings.pleasanter_case_action_column,
+            "case_body_column": settings.pleasanter_case_body_column,
+        },
+    )
 
 
 @app.get("/api/me")
@@ -372,14 +425,15 @@ def api_get_form(request: Request, conversation_id: str) -> dict[str, Any]:
         f = conv.form
         return {
             "conversation_id": conversation_id,
+            "case_result_id": conv.pleasanter_case_result_id,
+            "summary": f.summary,
             "cause": f.cause,
-            "solution": f.solution,
-            "details": f.details,
-            "llm_comment": f.llm_comment,
-            "ai_response": f.ai_response,
+            "action": f.action,
+            "body": f.body,
+            "include_summary": f.include_summary,
             "include_cause": f.include_cause,
-            "include_solution": f.include_solution,
-            "include_details": f.include_details,
+            "include_action": f.include_action,
+            "include_body": f.include_body,
             "updated_at": f.updated_at.isoformat() if f.updated_at else None,
         }
 
@@ -403,12 +457,14 @@ def api_update_form(request: Request, payload: dict[str, Any]) -> dict[str, Any]
             conv.form = FormState(conversation_id=conv.id)
 
         conv.updated_at = dt.datetime.now(dt.timezone.utc)
+        conv.form.summary = str(payload.get("summary") or "")
         conv.form.cause = str(payload.get("cause") or "")
-        conv.form.solution = str(payload.get("solution") or "")
-        conv.form.details = str(payload.get("details") or "")
+        conv.form.action = str(payload.get("action") or "")
+        conv.form.body = str(payload.get("body") or "")
+        conv.form.include_summary = bool(payload.get("include_summary", True))
         conv.form.include_cause = bool(payload.get("include_cause", True))
-        conv.form.include_solution = bool(payload.get("include_solution", True))
-        conv.form.include_details = bool(payload.get("include_details", True))
+        conv.form.include_action = bool(payload.get("include_action", True))
+        conv.form.include_body = bool(payload.get("include_body", True))
         return {"ok": True}
 
 
@@ -463,7 +519,13 @@ def api_summarize_email(request: Request, payload: dict[str, Any]) -> dict[str, 
         cleaned = clean_email_text(raw_email)
 
         # Difyへは実際のプロンプトで新規会話を開始する
-        prompt = build_summarize_prompt(cleaned)
+        prompt = build_summarize_prompt(
+            email_text=cleaned,
+            summary_key=settings.pleasanter_case_summary_column,
+            cause_key=settings.pleasanter_case_cause_column,
+            action_key=settings.pleasanter_case_action_column,
+            body_key=settings.pleasanter_case_body_column,
+        )
         data = _dify_chat_or_502(
             query=prompt,
             conversation_id=conversation_id if isinstance(conversation_id, str) else "",
@@ -489,8 +551,6 @@ def api_summarize_email(request: Request, payload: dict[str, Any]) -> dict[str, 
         parsed = try_parse_json_answer(answer) if isinstance(answer, str) else None
         if parsed and conv.form:
             _apply_parsed_to_form(conv.form, parsed)
-        if conv.form and isinstance(answer, str):
-            conv.form.ai_response = answer
 
         return {"conversation_id": conversation_id, "answer": answer, "parsed": parsed}
 
@@ -522,12 +582,18 @@ def api_form_ai_edit(request: Request, payload: dict[str, Any]) -> dict[str, Any
         conv.updated_at = dt.datetime.now(dt.timezone.utc)
         prompt = build_edit_prompt(
             instruction=instruction,
+            summary=f.summary,
             cause=f.cause,
-            solution=f.solution,
-            details=f.details,
+            action=f.action,
+            body=f.body,
+            include_summary=f.include_summary,
             include_cause=f.include_cause,
-            include_solution=f.include_solution,
-            include_details=f.include_details,
+            include_action=f.include_action,
+            include_body=f.include_body,
+            summary_key=settings.pleasanter_case_summary_column,
+            cause_key=settings.pleasanter_case_cause_column,
+            action_key=settings.pleasanter_case_action_column,
+            body_key=settings.pleasanter_case_body_column,
         )
 
         data = _dify_chat_or_502(query=prompt, conversation_id=conversation_id, inputs={}, user=_dify_user(user.username))
@@ -536,8 +602,6 @@ def api_form_ai_edit(request: Request, payload: dict[str, Any]) -> dict[str, Any
 
         if parsed:
             _apply_parsed_to_form(f, parsed)
-        if isinstance(answer, str):
-            f.ai_response = answer
 
         return {"conversation_id": conversation_id, "answer": answer, "parsed": parsed}
 
@@ -643,9 +707,9 @@ async def api_chat_ui(request: Request) -> dict[str, Any]:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                query = item.get("query")
-                if isinstance(query, str) and query.strip():
-                    messages.append({"role": "user", "content": query.strip(), "created_at": item.get("created_at")})
+                user_msg = _extract_user_message(item.get("query") if isinstance(item.get("query"), str) else None)
+                if user_msg:
+                    messages.append({"role": "user", "content": user_msg, "created_at": item.get("created_at")})
                 comment = _extract_llm_comment(item.get("answer") if isinstance(item.get("answer"), str) else None)
                 if comment:
                     messages.append(
@@ -653,20 +717,63 @@ async def api_chat_ui(request: Request) -> dict[str, Any]:
                     )
             return {"messages": messages, "conversation_id": conversation_id}
 
-        # POST
-        text = ""
+        # POST: 追加指示でフォームを更新（/api/form/ai_edit と同じ流れをここに統合）
+        instruction = ""
         if isinstance(payload, dict):
-            for key in ("message", "text", "content", "query", "input", "prompt"):
+            for key in ("user_comment", "instruction", "message", "text", "content", "query", "input", "prompt"):
                 val = payload.get(key)
                 if isinstance(val, str) and val.strip():
-                    text = val.strip()
+                    instruction = val.strip()
                     break
-        if not text:
-            raise HTTPException(status_code=400, detail="message is required")
+        if not instruction:
+            raise HTTPException(status_code=400, detail="user_comment is required")
+
+        if not conv.form:
+            conv.form = FormState(conversation_id=conv.id)
+        f = conv.form
+
+        # チェックボックスに応じて「どの項目を修正対象にするか」を決める。
+        # サンプルUIに合わせて、payloadに含まれる項目のみを修正対象にする。
+        has_summary = isinstance(payload.get("summary"), str)
+        has_cause = isinstance(payload.get("cause"), str)
+        has_action = isinstance(payload.get("action"), str)
+        has_body = isinstance(payload.get("body"), str)
+
+        f.include_summary = has_summary
+        f.include_cause = has_cause
+        f.include_action = has_action
+        f.include_body = has_body
+
+        # 修正対象のものだけ、現在フォーム値として上書きしてプロンプトに反映する
+        if has_summary:
+            f.summary = str(payload.get("summary") or "")
+        if has_cause:
+            f.cause = str(payload.get("cause") or "")
+        if has_action:
+            f.action = str(payload.get("action") or "")
+        if has_body:
+            f.body = str(payload.get("body") or "")
+
+        conv.updated_at = dt.datetime.now(dt.timezone.utc)
+        prompt = build_edit_prompt(
+            instruction=instruction,
+            summary=f.summary,
+            cause=f.cause,
+            action=f.action,
+            body=f.body,
+            include_summary=f.include_summary,
+            include_cause=f.include_cause,
+            include_action=f.include_action,
+            include_body=f.include_body,
+            summary_key=settings.pleasanter_case_summary_column,
+            cause_key=settings.pleasanter_case_cause_column,
+            action_key=settings.pleasanter_case_action_column,
+            body_key=settings.pleasanter_case_body_column,
+        )
 
         try:
             data = dify.chat(
-                query=text,
+                query=prompt,
                 conversation_id=conversation_id,
                 inputs={},
                 user=_dify_user(user.username),
@@ -680,14 +787,13 @@ async def api_chat_ui(request: Request) -> dict[str, Any]:
             }
             raise HTTPException(status_code=502, detail=detail)
 
-        conv.updated_at = dt.datetime.now(dt.timezone.utc)
         answer = data.get("answer") if isinstance(data, dict) else None
+        parsed = try_parse_json_answer(answer) if isinstance(answer, str) else None
+        if isinstance(parsed, dict):
+            _apply_parsed_to_form(f, parsed)
+
         comment = _extract_llm_comment(answer if isinstance(answer, str) else None)
-        return {
-            "message": comment or (answer if isinstance(answer, str) else ""),
-            "answer": answer,
-            "conversation_id": conversation_id,
-        }
+        return {"message": comment or (answer if isinstance(answer, str) else ""), "answer": answer, "conversation_id": conversation_id}
 
 
 @app.get("/api/pleasanter/cases")
@@ -784,6 +890,8 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
     except Exception:
         raise HTTPException(status_code=400, detail="case_result_id is required (int)")
 
+    requested_conversation_id = str(payload.get("conversation_id") or "").strip()
+
     with session_scope() as session:
         user = session.get(User, user_id)
         if not user:
@@ -840,12 +948,21 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
         sorted_items = sorted(items, key=_sort_key)
 
         try:
-            # 既存会話があれば使う（無ければ後でDifyの返却IDで作成）
-            conv = (
-                session.query(Conversation)
-                .filter(Conversation.user_id == user.id, Conversation.pleasanter_case_result_id == case_result_id_int)
-                .one_or_none()
-            )
+            # 会話IDが指定されている場合のみ、その会話の続きとして扱う。
+            # 指定が無い場合は「新規会話」として Dify が返す conversation_id で会話を作成する。
+            conv: Conversation | None = None
+            if requested_conversation_id:
+                conv = (
+                    session.query(Conversation)
+                    .filter(Conversation.user_id == user.id, Conversation.dify_conversation_id == requested_conversation_id)
+                    .one_or_none()
+                )
+                if not conv:
+                    raise HTTPException(status_code=404, detail="conversation not found")
+                if conv.pleasanter_case_result_id is not None and conv.pleasanter_case_result_id != case_result_id_int:
+                    raise HTTPException(status_code=400, detail="conversation is linked to a different case_result_id")
+                if conv.pleasanter_case_result_id is None:
+                    conv.pleasanter_case_result_id = case_result_id_int
 
             email_blocks: list[str] = []
 
@@ -870,7 +987,7 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
                 if conv and mail_result_id_int is not None:
                     exists = (
                         session.query(Email)
-                        .filter(Email.pleasanter_mail_result_id == mail_result_id_int)
+                        .filter(Email.conversation_id == conv.id, Email.pleasanter_mail_result_id == mail_result_id_int)
                         .one_or_none()
                     )
                     if exists:
@@ -907,17 +1024,23 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
             raise HTTPException(status_code=404, detail={"message": "No email body found for this case", "debug": debug})
 
         combined_cleaned = "\n\n".join(email_blocks).strip()
-        prompt = build_summarize_prompt(combined_cleaned)
+        prompt = build_summarize_prompt(
+            email_text=combined_cleaned,
+            summary_key=settings.pleasanter_case_summary_column,
+            cause_key=settings.pleasanter_case_cause_column,
+            action_key=settings.pleasanter_case_action_column,
+            body_key=settings.pleasanter_case_body_column,
+        )
         data = _dify_chat_or_502(
             query=prompt, conversation_id=conv.dify_conversation_id if conv else "", inputs={}, user=_dify_user(user.username)
         )
-        conversation_id = str(data.get("conversation_id") or "").strip()
-        if not conversation_id:
+        dify_conversation_id = str(data.get("conversation_id") or "").strip()
+        if not dify_conversation_id:
             raise HTTPException(status_code=502, detail="Dify did not return conversation_id")
         if not conv:
             conv = Conversation(
                 user_id=user.id,
-                dify_conversation_id=conversation_id,
+                dify_conversation_id=dify_conversation_id,
                 title=f"案件 {case_result_id_int}",
                 pleasanter_case_result_id=case_result_id_int,
             )
@@ -954,8 +1077,6 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
         parsed = try_parse_json_answer(answer) if isinstance(answer, str) else None
         if parsed and conv.form:
             _apply_parsed_to_form(conv.form, parsed)
-        if conv.form and isinstance(answer, str):
-            conv.form.ai_response = answer
 
         result: dict[str, Any] = {
             "conversation_id": conv.dify_conversation_id,
@@ -1025,9 +1146,10 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
         if not conv.form:
             raise HTTPException(status_code=400, detail="conversation has no form data")
 
+        summary = conv.form.summary or ""
         cause = conv.form.cause or ""
-        solution = conv.form.solution or ""
-        details = conv.form.details or ""
+        action = conv.form.action or ""
+        body = conv.form.body or ""
 
         ple = PleasanterClient(
             base_url=settings.pleasanter_base_url or "",
@@ -1090,21 +1212,22 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
 
         # 2. summary テーブルを更新
         logger.info(
-            "pleasanter save_summary: updating summary summary_id=%s cause_len=%s solution_len=%s details_len=%s",
+            "pleasanter save_summary: updating summary summary_id=%s summary_len=%s cause_len=%s action_len=%s body_len=%s",
             summary_result_id,
+            len(summary),
             len(cause),
-            len(solution),
-            len(details),
+            len(action),
+            len(body),
             extra={"request_id": getattr(request.state, "request_id", None)},
         )
         update_resp = ple.update_item(
-            site_id=settings.pleasanter_summary_site_id,
-            result_id=summary_result_id,
+            record_id=summary_result_id,
             fields={
-                "DescriptionA": cause,
-                "DescriptionB": solution,
-                "DescriptionC": details,
-            }
+                "DescriptionA": summary,
+                "DescriptionB": cause,
+                "DescriptionC": action,
+                "Body": body,
+            },
         )
 
         if not update_resp.ok:
@@ -1135,6 +1258,67 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
             "summary_result_id": summary_result_id,
             "message": "まとめサイトに保存しました",
         }
+
+
+@app.post("/api/pleasanter/save_case")
+def api_pleasanter_save_case(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    フォーム（概要/原因/処置/内容）を案件テーブルの指定列に書き込む。
+    - 概要 -> PLEASANTER_CASE_SUMMARY_COLUMN（既定: DescriptionA）
+    - 原因 -> PLEASANTER_CASE_CAUSE_COLUMN（既定: DescriptionB）
+    - 処置 -> PLEASANTER_CASE_ACTION_COLUMN（既定: DescriptionC）
+    - 内容 -> PLEASANTER_CASE_BODY_COLUMN（既定: Body）
+    """
+
+    user_id = _require_user_id(request)
+    if not settings.pleasanter_base_url or not settings.pleasanter_api_key:
+        raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_BASE_URL / PLEASANTER_API_KEY)")
+
+    conversation_id = str(payload.get("conversation_id") or "").strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    with session_scope() as session:
+        conv = (
+            session.query(Conversation)
+            .filter(Conversation.user_id == user_id, Conversation.dify_conversation_id == conversation_id)
+            .one_or_none()
+        )
+        if not conv:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if conv.pleasanter_case_result_id is None:
+            raise HTTPException(status_code=400, detail="conversation has no case_result_id")
+        if not conv.form:
+            raise HTTPException(status_code=400, detail="conversation has no form data")
+
+        case_result_id = int(conv.pleasanter_case_result_id)
+        f = conv.form
+
+        fields = {
+            settings.pleasanter_case_summary_column: f.summary or "",
+            settings.pleasanter_case_cause_column: f.cause or "",
+            settings.pleasanter_case_action_column: f.action or "",
+            settings.pleasanter_case_body_column: f.body or "",
+        }
+
+        ple = PleasanterClient(
+            base_url=settings.pleasanter_base_url or "",
+            api_key=settings.pleasanter_api_key or "",
+            api_version=settings.pleasanter_api_version,
+        )
+        update_resp = ple.update_item(record_id=case_result_id, fields=fields)
+        if not update_resp.ok:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Failed to update case record in Pleasanter",
+                    "pleasanter_error": update_resp.error_message,
+                    "case_result_id": case_result_id,
+                },
+            )
+
+        conv.updated_at = dt.datetime.now(dt.timezone.utc)
+        return {"ok": True, "case_result_id": case_result_id, "message": "案件サイトに保存しました"}
 
 
 @app.exception_handler(HTTPException)

@@ -36,13 +36,7 @@
           <div class="status-left">
             <div class="status" id="status" data-state="idle">
               <span class="spinner" aria-hidden="true"></span>
-              <div class="status-content">
-                <span class="status-text"></span>
-                <span class="status-detail" id="statusDetail"></span>
-              </div>
-            </div>
-            <div class="progress-bar" id="progressBar" style="display: none;">
-              <div class="progress-fill" id="progressFill"></div>
+              <span class="status-text"></span>
             </div>
           </div>
           <div class="status-right">
@@ -75,7 +69,7 @@
             <div id="caseResults" class="list"></div>
             <label>案件URL</label>
             <div class="row row-inline">
-              <input id="caseUrl" placeholder="http://pleasanter.example.com/items/12345" />
+              <input id="caseUrl" placeholder="http://localhost:50001/items/99" />
               <button id="caseUrlApply" class="secondary">URLで指定</button>
             </div>
             <div class="muted" id="caseInfo"></div>
@@ -103,37 +97,47 @@
         <div class="tab-content" id="tabSummaryContent">
           <div class="grid">
             <div class="card">
-              <h2>フォーム</h2>
+              <h2>フォーム（案件へ反映）</h2>
 
               <label class="with-toggle">
-                <span>原因（目安200文字）</span>
+                <span>概要（{{ case_summary_column }} / 目安200文字以内）</span>
+                <span><input type="checkbox" id="includeSummary" checked /> 修正対象</span>
+              </label>
+              <textarea id="summary" rows="3"></textarea>
+
+              <label class="with-toggle">
+                <span>原因（{{ case_cause_column }} / 目安200文字以内）</span>
                 <span><input type="checkbox" id="includeCause" checked /> 修正対象</span>
               </label>
-              <textarea id="cause" rows="4"></textarea>
+              <textarea id="cause" rows="3"></textarea>
 
               <label class="with-toggle">
-                <span>解決策（目安200文字）</span>
-                <span><input type="checkbox" id="includeSolution" checked /> 修正対象</span>
+                <span>処置（{{ case_action_column }} / 目安200文字以内）</span>
+                <span><input type="checkbox" id="includeAction" checked /> 修正対象</span>
               </label>
-              <textarea id="solution" rows="4"></textarea>
+              <textarea id="action" rows="3"></textarea>
 
               <label class="with-toggle">
-                <span>経緯（制限なし）</span>
-                <span><input type="checkbox" id="includeDetails" checked /> 修正対象</span>
+                <span>内容（{{ case_body_column }} / 制限なし）</span>
+                <span><input type="checkbox" id="includeBody" checked /> 修正対象</span>
               </label>
-              <textarea id="details" rows="10"></textarea>
+              <textarea id="body" rows="10"></textarea>
 
               <div class="row">
                 <button id="saveForm" class="secondary">フォーム保存</button>
+                <button id="saveToCase" class="secondary">案件へ反映</button>
               </div>
             </div>
 
             <div class="card chat-card">
               <div class="chat-header">
                 <h2>会話履歴</h2>
-                <button id="clearChat" class="icon-btn" title="会話をクリア">
+                <button id="clearChat" class="icon-btn" title="表示をクリア">
                   <span class="material-icons">delete_outline</span>
                 </button>
+              </div>
+              <div class="muted" style="margin-bottom: 8px">
+                表示されるのは「ユーザー発言」と「llm_comment」のみです。会話履歴はDifyから取得します。
               </div>
               <div class="chat-container" id="chatContainer">
                 <div class="chat-messages" id="chatMessages">
@@ -144,12 +148,7 @@
                 </div>
               </div>
               <div class="chat-input-area">
-                <textarea
-                  id="chatInput"
-                  class="chat-input"
-                  placeholder="AIへ追加指示を入力..."
-                  rows="1"
-                ></textarea>
+                <textarea id="chatInput" class="chat-input" placeholder="AIへ追加指示を入力..." rows="1"></textarea>
                 <button id="chatSend" class="chat-send-btn" disabled>
                   <span class="material-icons">send</span>
                 </button>
@@ -160,10 +159,6 @@
       </section>
     </main>
 
-    <script>
-      // ログレベル設定
-      window.__LOG_LEVEL__ = '{{ log_level }}';
-    </script>
-    <script src="/static/app.js?v=20260108"></script>
+    <script src="/static/app.js"></script>
   </body>
 </html>

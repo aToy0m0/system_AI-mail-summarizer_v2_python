@@ -16,5 +16,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+docs/ドキュメント.md
 docs/
 docs/*
