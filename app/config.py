@@ -85,6 +85,11 @@ class Settings:
     pleasanter_case_action_column: str
     pleasanter_case_body_column: str
 
+    pleasanter_case_summary_label: str
+    pleasanter_case_cause_label: str
+    pleasanter_case_action_label: str
+    pleasanter_case_body_label: str
+
     def __init__(self) -> None:
         self.app_env = os.getenv("APP_ENV", "dev")
         self.secret_key = _env("APP_SECRET_KEY", "change-me")
@@ -114,6 +119,12 @@ class Settings:
         self.pleasanter_case_cause_column = os.getenv("PLEASANTER_CASE_CAUSE_COLUMN", "DescriptionB")
         self.pleasanter_case_action_column = os.getenv("PLEASANTER_CASE_ACTION_COLUMN", "DescriptionC")
         self.pleasanter_case_body_column = os.getenv("PLEASANTER_CASE_BODY_COLUMN", "Body")
+
+        # UI表示用（内部処理は *_COLUMN の物理名を使う）
+        self.pleasanter_case_summary_label = os.getenv("PLEASANTER_CASE_SUMMARY_LABEL", "概要")
+        self.pleasanter_case_cause_label = os.getenv("PLEASANTER_CASE_CAUSE_LABEL", "原因")
+        self.pleasanter_case_action_label = os.getenv("PLEASANTER_CASE_ACTION_LABEL", "処置")
+        self.pleasanter_case_body_label = os.getenv("PLEASANTER_CASE_BODY_LABEL", "内容")
 
 
 _load_dotenv_if_present()

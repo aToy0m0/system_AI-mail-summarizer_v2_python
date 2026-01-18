@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ユーザー管理</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-left">
+        <form method="get" action="/">
+          <button type="submit" class="secondary">戻る</button>
+        </form>
+        <span class="brand">管理コンソール</span>
+      </div>
+      <div class="header-right">
+        <form method="post" action="/logout">
+          <button type="submit" class="secondary">ログアウト</button>
+        </form>
+      </div>
+    </header>
+
+    <main class="container">
+      <h1>ユーザー管理</h1>
+      <p class="muted">ログイン中: {{ me.username }} ({{ me.role }})</p>
+      {% if error %}
+      <p class="error">{{ error }}</p>
+      {% endif %}
+      {% if ok %}
+      <p class="success">{{ ok }}</p>
+      {% endif %}
+
+      <section class="card">
+        <h2>ユーザー作成</h2>
+        <form method="post" action="/admin/users/create">
+          <label>
+            ID
+            <input name="username" autocomplete="off" required />
+          </label>
+          <label>
+            権限
+            <select name="role" class="tab-select">
+              <option value="user" selected>利用者</option>
+              <option value="admin">管理者</option>
+            </select>
+          </label>
+          <label>
+            初期パスワード
+            <input name="password" type="password" autocomplete="new-password" required />
+          </label>
+          <div class="row row-inline">
+            <button type="submit">作成</button>
+          </div>
+        </form>
+      </section>
+
+      <h2 style="margin-top: 16px">ユーザー一覧</h2>
+      <div class="list">
+        {% for u in users %}
+        <div class="card">
+          <div class="row">
+            <div>
+              <strong>{{ u.username }}</strong>
+              <span class="muted">({{ u.role }})</span>
+            </div>
+            <span class="muted">id={{ u.id }}</span>
+          </div>
+          <div class="muted">作成日時: {{ u.created_at }}</div>
+
+          <form method="post" action="/admin/users/{{ u.id }}/password" class="row row-inline">
+            <input name="new_password" type="password" autocomplete="new-password" placeholder="新しいパスワード" required />
+            <button type="submit" class="secondary">パスワード変更</button>
+          </form>
+
+          <form method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('ユーザーを削除します。よろしいですか？');">
+            <button type="submit" class="secondary">削除</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+    </main>
+  </body>
+</html>
+

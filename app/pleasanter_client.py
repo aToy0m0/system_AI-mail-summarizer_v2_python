@@ -163,7 +163,7 @@ def build_mail_view(*, link_column: str, case_result_id: int, body_column: str) 
     - ApiDataType="KeyValues" の場合、既定ではキーが「表示名」になるため、
       サーバ側で列名を扱えるよう ApiColumnKeyDisplayType="ColumnName" を指定する。
     - 取得したい列が一覧に出ていないと返らないことがあるため、GridColumns に明示する。
-    - ClassA/ClassD などのリンク列は ColumnFilterHash の値を JSON 文字列 (例: '[\"99\"]') で指定する。
+    - リンク列(ClassA/ClassD等)は ColumnFilterHash の値を JSON配列文字列 (例: '[\"99\"]') で指定する環境がある。
     """
     grid_columns: list[str] = []
     for c in ("ResultId", "Title", "UpdatedTime", link_column, body_column):
@@ -181,10 +181,10 @@ def build_mail_view(*, link_column: str, case_result_id: int, body_column: str) 
     }
 
 
-def build_case_view(*, result_id: int | None = None, link_column: str | None = None) -> dict[str, Any]:
+def build_case_view(*, result_id: int | None = None, title: str | None = None, link_column: str | None = None) -> dict[str, Any]:
     """
     親テーブル(案件)取得 API 向け View。
-    - ResultId での存在確認は ExactMatch を使用
+    - ResultId / Title での存在確認は ExactMatch を使用
     """
     grid_columns = ["ResultId", "Title", "UpdatedTime"]
     if link_column and link_column not in grid_columns:
@@ -196,8 +196,13 @@ def build_case_view(*, result_id: int | None = None, link_column: str | None = N
         "GridColumns": grid_columns,
         "ColumnSorterHash": {"UpdatedTime": "desc"},
     }
+    if result_id is not None and title is not None:
+        raise ValueError("Specify only one of result_id or title")
+
     if result_id is not None:
         view["ColumnFilterHash"] = {"ResultId": str(result_id)}
         view["ColumnFilterSearchTypes"] = {"ResultId": "ExactMatch"}
+    if title is not None:
+        view["ColumnFilterHash"] = {"Title": str(title)}
+        view["ColumnFilterSearchTypes"] = {"Title": "ExactMatch"}
     return view
-

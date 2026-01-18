@@ -6,12 +6,14 @@ import os
 import traceback
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.ai_prompt import build_edit_prompt, build_summarize_prompt
@@ -34,7 +36,11 @@ _SUMMARY_MAX_CHARS = 200
 _CAUSE_MAX_CHARS = 200
 _ACTION_MAX_CHARS = 200
 
-logger = logging.getLogger(" Pleasanterメール要約")
+logger = logging.getLogger("pleasanter-mail-summarizer")
+
+_ROLE_ADMIN = "admin"
+_ROLE_USER = "user"
+_ALLOWED_ROLES = {_ROLE_ADMIN, _ROLE_USER}
 
 
 def _get_user_id(request: Request) -> int | None:
@@ -52,6 +58,22 @@ def _require_user_id(request: Request) -> int:
     if user_id is None:
         raise HTTPException(status_code=401, detail="not logged in")
     return user_id
+
+
+def _normalize_role(role: str | None) -> str:
+    role_s = str(role or "").strip().lower()
+    return role_s if role_s in _ALLOWED_ROLES else _ROLE_USER
+
+
+def _is_admin_role(role: str | None) -> bool:
+    return _normalize_role(role) == _ROLE_ADMIN
+
+
+def _redirect_admin_message(kind: str, message: str) -> RedirectResponse:
+    kind_s = str(kind or "").strip().lower()
+    if kind_s not in {"ok", "error"}:
+        kind_s = "ok"
+    return RedirectResponse(url=f"/admin?{kind_s}={quote(str(message or '').strip())}", status_code=303)
 
 
 def _dify_user(username: str) -> str:
@@ -111,9 +133,20 @@ def _apply_parsed_to_form(form: FormState, parsed: dict[str, Any]) -> None:
     body_keys = [settings.pleasanter_case_body_column, "body", "details", "Body"]
 
     def pick(keys: list[str]) -> tuple[bool, str]:
+        """
+        Difyの出力が「修正対象外フィールドも key だけ出して空文字で返す」ことがある。
+        その場合、空文字でフォームを上書きしてしまうとユーザー入力が消えるため、
+        空/空白は「未指定」とみなして更新しない。
+        """
         for k in keys:
-            if k in parsed:
-                return True, str(parsed.get(k) or "")
+            if k not in parsed:
+                continue
+            v = parsed.get(k)
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            return True, str(v)
         return False, ""
 
     has_summary, summary = pick(summary_keys)
@@ -147,6 +180,13 @@ def _assert_pleasanter_case_ready() -> None:
         raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_BASE_URL / PLEASANTER_API_KEY)")
     if settings.pleasanter_case_site_id is None:
         raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_CASE_SITE_ID)")
+
+
+def _assert_pleasanter_summary_ready() -> None:
+    if not settings.pleasanter_base_url or not settings.pleasanter_api_key:
+        raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_BASE_URL / PLEASANTER_API_KEY)")
+    if settings.pleasanter_summary_site_id is None:
+        raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_SUMMARY_SITE_ID)")
 
 
 def _extract_items_list(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -193,6 +233,17 @@ def _extract_mail_body(item: dict[str, Any], preferred_key: str) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return ""
+
+
+def _extract_mail_link_value(item: dict[str, Any], link_column: str) -> str:
+    v = item.get(link_column)
+    if v is None:
+        v = _extract_nested_value(item, link_column)
+    if isinstance(v, str):
+        return v.strip()
+    if v is None:
+        return ""
+    return str(v).strip()
 
 
 def _safe_preview(s: str, max_chars: int = 400) -> str:
@@ -293,8 +344,30 @@ def _get_or_create_admin() -> None:
     with session_scope() as session:
         user = session.query(User).filter(User.username == settings.admin_username).one_or_none()
         if user:
+            if not _is_admin_role(getattr(user, "role", None)):
+                user.role = _ROLE_ADMIN
             return
-        session.add(User(username=settings.admin_username, password_hash=hash_password(settings.admin_password)))
+        session.add(
+            User(
+                username=settings.admin_username,
+                password_hash=hash_password(settings.admin_password),
+                role=_ROLE_ADMIN,
+            )
+        )
+
+
+def _ensure_schema() -> None:
+    """
+    既存DBに後からカラムを足した場合、SQLAlchemyのcreate_allでは反映されない。
+    本アプリはマイグレーションツールを使っていないため、必要最小限の差分は起動時に吸収する。
+    """
+    insp = inspect(engine)
+    if "users" not in set(insp.get_table_names()):
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "role" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'"))
 
 
 @app.middleware("http")
@@ -326,6 +399,7 @@ def startup() -> None:
     level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     Base.metadata.create_all(bind=engine)
+    _ensure_schema()
     _get_or_create_admin()
 
 
@@ -359,8 +433,14 @@ def logout(request: Request) -> RedirectResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    if _get_user_id(request) is None:
+    user_id = _get_user_id(request)
+    if user_id is None:
         return RedirectResponse(url="/login", status_code=303)
+    with session_scope() as session:
+        user = session.get(User, user_id)
+        if not user:
+            request.session.clear()
+            return RedirectResponse(url="/login", status_code=303)
     log_level = os.getenv("LOG_LEVEL", "info").lower()
     return templates.TemplateResponse(
         "index.html",
@@ -371,6 +451,10 @@ def index(request: Request) -> HTMLResponse:
             "case_cause_column": settings.pleasanter_case_cause_column,
             "case_action_column": settings.pleasanter_case_action_column,
             "case_body_column": settings.pleasanter_case_body_column,
+            "case_summary_label": settings.pleasanter_case_summary_label,
+            "case_cause_label": settings.pleasanter_case_cause_label,
+            "case_action_label": settings.pleasanter_case_action_label,
+            "case_body_label": settings.pleasanter_case_body_label,
         },
     )
 
@@ -382,7 +466,127 @@ def api_me(request: Request) -> dict[str, Any]:
         user = session.get(User, user_id)
         if not user:
             raise HTTPException(status_code=401, detail="not logged in")
-        return {"id": user.id, "username": user.username}
+        role = getattr(user, "role", _ROLE_USER)
+        return {"id": user.id, "username": user.username, "role": role, "is_admin": _is_admin_role(role)}
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_console(request: Request) -> HTMLResponse:
+    user_id = _get_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    ok = request.query_params.get("ok")
+    error = request.query_params.get("error")
+
+    with session_scope() as session:
+        me = session.get(User, user_id)
+        if not me:
+            request.session.clear()
+            return RedirectResponse(url="/login", status_code=303)
+        if not _is_admin_role(getattr(me, "role", None)):
+            return RedirectResponse(url="/", status_code=303)
+
+        users = session.query(User).order_by(User.created_at.asc(), User.id.asc()).all()
+        rows = [
+            {
+                "id": u.id,
+                "username": u.username,
+                "role": getattr(u, "role", _ROLE_USER),
+                "created_at": u.created_at,
+            }
+            for u in users
+        ]
+        me_row = {"id": me.id, "username": me.username, "role": getattr(me, "role", _ROLE_USER)}
+
+    return templates.TemplateResponse("admin.html", {"request": request, "me": me_row, "users": rows, "ok": ok, "error": error})
+
+
+@app.post("/admin/users/create")
+def admin_create_user(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    role: str = Form("user"),
+) -> RedirectResponse:
+    user_id = _get_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    username = str(username or "").strip()
+    password = str(password or "").strip()
+    role = _normalize_role(role)
+    if not username or not password:
+        return _redirect_admin_message("error", "IDとパスワードは必須です")
+
+    with session_scope() as session:
+        me = session.get(User, user_id)
+        if not me or not _is_admin_role(getattr(me, "role", None)):
+            return RedirectResponse(url="/", status_code=303)
+
+        session.add(User(username=username, password_hash=hash_password(password), role=role))
+        try:
+            session.flush()
+        except IntegrityError:
+            return _redirect_admin_message("error", "そのIDは既に存在します")
+
+    return _redirect_admin_message("ok", "ユーザーを作成しました")
+
+
+@app.post("/admin/users/{target_user_id}/password")
+def admin_change_password(
+    request: Request,
+    target_user_id: int,
+    new_password: str = Form(...),
+) -> RedirectResponse:
+    user_id = _get_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    new_password = str(new_password or "").strip()
+    if not new_password:
+        return _redirect_admin_message("error", "新しいパスワードは必須です")
+
+    with session_scope() as session:
+        me = session.get(User, user_id)
+        if not me or not _is_admin_role(getattr(me, "role", None)):
+            return RedirectResponse(url="/", status_code=303)
+
+        target = session.get(User, int(target_user_id))
+        if not target:
+            return _redirect_admin_message("error", "対象ユーザーが見つかりません")
+
+        target.password_hash = hash_password(new_password)
+
+    return _redirect_admin_message("ok", "パスワードを更新しました")
+
+
+@app.post("/admin/users/{target_user_id}/delete")
+def admin_delete_user(request: Request, target_user_id: int) -> RedirectResponse:
+    user_id = _get_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    if int(target_user_id) == int(user_id):
+        return _redirect_admin_message("error", "自分自身は削除できません")
+
+    with session_scope() as session:
+        me = session.get(User, user_id)
+        if not me or not _is_admin_role(getattr(me, "role", None)):
+            return RedirectResponse(url="/", status_code=303)
+
+        target = session.get(User, int(target_user_id))
+        if not target:
+            return _redirect_admin_message("error", "対象ユーザーが見つかりません")
+
+        if _is_admin_role(getattr(target, "role", None)):
+            admin_count = session.query(User).filter(User.role == _ROLE_ADMIN).count()
+            if admin_count <= 1:
+                return _redirect_admin_message("error", "最後の管理者は削除できません")
+
+        session.delete(target)
+
+    return _redirect_admin_message("ok", "ユーザーを削除しました")
 
 
 @app.get("/api/conversations")
@@ -425,6 +629,8 @@ def api_get_form(request: Request, conversation_id: str) -> dict[str, Any]:
         f = conv.form
         return {
             "conversation_id": conversation_id,
+            "summary_result_id": conv.pleasanter_case_result_id,
+            # 互換（旧UI向け）
             "case_result_id": conv.pleasanter_case_result_id,
             "summary": f.summary,
             "cause": f.cause,
@@ -799,7 +1005,7 @@ async def api_chat_ui(request: Request) -> dict[str, Any]:
 @app.get("/api/pleasanter/cases")
 def api_pleasanter_cases(request: Request, query: str | None = None, limit: int = 50) -> dict[str, Any]:
     _require_user_id(request)
-    _assert_pleasanter_case_ready()
+    _assert_pleasanter_summary_ready()
 
     try:
         limit = max(1, min(int(limit), 200))
@@ -812,7 +1018,7 @@ def api_pleasanter_cases(request: Request, query: str | None = None, limit: int 
         api_version=settings.pleasanter_api_version,
     )
     view = build_case_view()
-    ple_resp = ple.get_items(site_id=settings.pleasanter_case_site_id or 0, view=view, offset=0, page_size=limit)
+    ple_resp = ple.get_items(site_id=settings.pleasanter_summary_site_id, view=view, offset=0, page_size=limit)
     items = _extract_items_list(ple_resp.data)
     pleasanter_debug = _build_pleasanter_debug(ple_resp=ple_resp, view=view, items=items)
     if not ple_resp.ok:
@@ -821,7 +1027,7 @@ def api_pleasanter_cases(request: Request, query: str | None = None, limit: int 
             "base_url": settings.pleasanter_base_url,
             "hint": _pleasanter_hint(settings.pleasanter_base_url or ""),
             "checks": [
-                "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_CASE_SITE_ID を確認",
+                "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_SUMMARY_SITE_ID を確認",
             ],
             "pleasanter": pleasanter_debug,
         }
@@ -839,13 +1045,13 @@ def api_pleasanter_cases(request: Request, query: str | None = None, limit: int 
                 continue
         results.append({"result_id": result_id, "title": title, "updated_time": updated_time})
 
-    return {"items": results, "total": len(results)}
+    return {"items": results, "total": len(results), "site_id": settings.pleasanter_summary_site_id, "site_type": "summary"}
 
 
 @app.get("/api/pleasanter/case_lookup")
 def api_pleasanter_case_lookup(request: Request, case_result_id: int) -> dict[str, Any]:
     _require_user_id(request)
-    _assert_pleasanter_case_ready()
+    _assert_pleasanter_summary_ready()
 
     ple = PleasanterClient(
         base_url=settings.pleasanter_base_url or "",
@@ -853,7 +1059,7 @@ def api_pleasanter_case_lookup(request: Request, case_result_id: int) -> dict[st
         api_version=settings.pleasanter_api_version,
     )
     view = build_case_view(result_id=case_result_id)
-    ple_resp = ple.get_items(site_id=settings.pleasanter_case_site_id or 0, view=view, offset=0, page_size=1)
+    ple_resp = ple.get_items(site_id=settings.pleasanter_summary_site_id, view=view, offset=0, page_size=1)
     items = _extract_items_list(ple_resp.data)
     pleasanter_debug = _build_pleasanter_debug(ple_resp=ple_resp, view=view, items=items)
     if not ple_resp.ok:
@@ -862,20 +1068,23 @@ def api_pleasanter_case_lookup(request: Request, case_result_id: int) -> dict[st
             "base_url": settings.pleasanter_base_url,
             "hint": _pleasanter_hint(settings.pleasanter_base_url or ""),
             "checks": [
-                "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_CASE_SITE_ID を確認",
+                "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_SUMMARY_SITE_ID を確認",
             ],
             "pleasanter": pleasanter_debug,
         }
         raise HTTPException(status_code=502, detail=detail)
 
     if not items:
-        raise HTTPException(status_code=404, detail={"message": "Case not found", "case_result_id": case_result_id})
+        raise HTTPException(status_code=404, detail={"message": "Summary not found", "summary_result_id": case_result_id})
 
     it = items[0]
     return {
         "result_id": it.get("ResultId"),
+        "summary_result_id": it.get("ResultId"),
         "title": it.get("Title") or "",
         "updated_time": it.get("UpdatedTime"),
+        "site_id": settings.pleasanter_summary_site_id,
+        "site_type": "summary",
     }
 
 
@@ -884,11 +1093,14 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
     user_id = _require_user_id(request)
     _assert_pleasanter_ready()
 
-    case_result_id = payload.get("case_result_id")
+    summary_result_id = payload.get("summary_result_id")
+    if summary_result_id is None:
+        # 互換: 旧UIは case_result_id を送ってくる
+        summary_result_id = payload.get("case_result_id")
     try:
-        case_result_id_int = int(case_result_id)
+        summary_result_id_int = int(summary_result_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="case_result_id is required (int)")
+        raise HTTPException(status_code=400, detail="summary_result_id is required (int)")
 
     requested_conversation_id = str(payload.get("conversation_id") or "").strip()
 
@@ -902,27 +1114,169 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
             api_key=settings.pleasanter_api_key or "",
             api_version=settings.pleasanter_api_version,
         )
-        view = build_mail_view(
-            link_column=settings.pleasanter_mail_link_column,
-            case_result_id=case_result_id_int,
-            body_column=settings.pleasanter_mail_body_column,
-        )
-        ple_resp = ple.get_items(site_id=settings.pleasanter_mail_site_id or 0, view=view, offset=0, page_size=200)
-        items = _extract_items_list(ple_resp.data)
-        pleasanter_debug = _build_pleasanter_debug(ple_resp=ple_resp, view=view, items=items)
-        if not ple_resp.ok:
+
+        if settings.pleasanter_summary_site_id is None:
+            raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_SUMMARY_SITE_ID)")
+        if settings.pleasanter_case_site_id is None:
+            raise HTTPException(status_code=400, detail="Pleasanter env is not set (PLEASANTER_CASE_SITE_ID)")
+
+        # 1) 案件サマリ(ResultId) → Title を取得
+        summary_view = build_case_view(result_id=summary_result_id_int)
+        summary_resp = ple.get_items(site_id=settings.pleasanter_summary_site_id, view=summary_view, offset=0, page_size=1)
+        summary_items = _extract_items_list(summary_resp.data)
+        summary_debug = _build_pleasanter_debug(ple_resp=summary_resp, view=summary_view, items=summary_items)
+        if not summary_resp.ok:
             detail: dict[str, Any] = {
                 "message": "Pleasanter API error",
                 "base_url": settings.pleasanter_base_url,
                 "hint": _pleasanter_hint(settings.pleasanter_base_url or ""),
                 "checks": [
-                    "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_MAIL_SITE_ID を確認",
-                    "PLEASANTER_MAIL_LINK_COLUMN（例: ClassD）を確認",
-                    "PLEASANTER_MAIL_BODY_COLUMN（例: Body）を確認",
+                    "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_SUMMARY_SITE_ID を確認",
                 ],
-                "pleasanter": pleasanter_debug,
+                "pleasanter": {"summary": summary_debug},
             }
             raise HTTPException(status_code=502, detail=detail)
+        if not summary_items:
+            raise HTTPException(status_code=404, detail={"message": "Summary not found", "summary_result_id": summary_result_id_int})
+
+        summary_title = str(summary_items[0].get("Title") or "").strip()
+        if not summary_title:
+            raise HTTPException(status_code=400, detail={"message": "Summary Title is empty", "summary_result_id": summary_result_id_int})
+
+        # 2) 案件サマリ Title(TRD25001) → 案件 Title(TRD25001A/B) のみを要約対象にする（C以降は対象外）
+        target_case_titles = [f"{summary_title}A", f"{summary_title}B"]
+        target_case_result_ids: list[int] = []
+        target_case_id_to_title: dict[int, str] = {}
+        case_debug_list: list[dict[str, Any]] = []
+        for t in target_case_titles:
+            case_view = build_case_view(title=t)
+            case_resp = ple.get_items(site_id=settings.pleasanter_case_site_id, view=case_view, offset=0, page_size=5)
+            case_items = _extract_items_list(case_resp.data)
+            case_debug_list.append({"title": t, "debug": _build_pleasanter_debug(ple_resp=case_resp, view=case_view, items=case_items)})
+            if not case_resp.ok:
+                detail = {
+                    "message": "Pleasanter API error",
+                    "base_url": settings.pleasanter_base_url,
+                    "hint": _pleasanter_hint(settings.pleasanter_base_url or ""),
+                    "checks": [
+                        "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_CASE_SITE_ID を確認",
+                    ],
+                    "pleasanter": {"summary": summary_debug, "cases": case_debug_list},
+                }
+                raise HTTPException(status_code=502, detail=detail)
+
+            for it in case_items:
+                rid = it.get("ResultId")
+                try:
+                    rid_int = int(rid) if rid is not None else None
+                except Exception:
+                    rid_int = None
+                if rid_int is not None and rid_int not in target_case_result_ids:
+                    target_case_result_ids.append(rid_int)
+                    target_case_id_to_title[rid_int] = str(it.get("Title") or "").strip() or t
+
+        if not target_case_result_ids:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "No target cases found for this summary title",
+                    "summary_result_id": summary_result_id_int,
+                    "summary_title": summary_title,
+                    "target_case_titles": target_case_titles,
+                },
+            )
+
+        # 3) 対象案件(A/B)ごとのメールを取得して結合
+        all_mail_items: list[dict[str, Any]] = []
+        mail_debug_list: list[dict[str, Any]] = []
+        for case_id in target_case_result_ids:
+            expected_case_title = target_case_id_to_title.get(case_id) or ""
+
+            mail_view = build_mail_view(
+                link_column=settings.pleasanter_mail_link_column,
+                case_result_id=case_id,
+                body_column=settings.pleasanter_mail_body_column,
+            )
+            mail_resp = ple.get_items(site_id=settings.pleasanter_mail_site_id or 0, view=mail_view, offset=0, page_size=200)
+            mail_items = _extract_items_list(mail_resp.data)
+
+            # 環境によってはリンク列フィルタが効かず、全件返ってくることがあるため、必ずローカルでも絞り込む。
+            filtered_mail_items: list[dict[str, Any]] = []
+            filtered_out = 0
+            if expected_case_title:
+                for it in mail_items:
+                    link_value = _extract_mail_link_value(it, settings.pleasanter_mail_link_column)
+                    if link_value == expected_case_title or link_value == str(case_id):
+                        filtered_mail_items.append(it)
+                    else:
+                        filtered_out += 1
+            else:
+                filtered_mail_items = mail_items
+
+            # フィルタが0件なら、別形式のフィルタ（文字列）も試し、同様にローカルで絞り込む
+            if not filtered_mail_items and expected_case_title:
+                alt_view = {
+                    "ApiDataType": "KeyValues",
+                    "ApiColumnKeyDisplayType": "ColumnName",
+                    "GridColumns": ["ResultId", "Title", "UpdatedTime", settings.pleasanter_mail_link_column, settings.pleasanter_mail_body_column],
+                    "ColumnFilterHash": {settings.pleasanter_mail_link_column: expected_case_title},
+                    "ColumnFilterSearchTypes": {settings.pleasanter_mail_link_column: "ExactMatch"},
+                    "ColumnSorterHash": {"UpdatedTime": "desc"},
+                }
+                alt_resp = ple.get_items(site_id=settings.pleasanter_mail_site_id or 0, view=alt_view, offset=0, page_size=200)
+                alt_items = _extract_items_list(alt_resp.data)
+                if alt_resp.ok:
+                    mail_items = alt_items
+                    filtered_mail_items = [
+                        it
+                        for it in alt_items
+                        if _extract_mail_link_value(it, settings.pleasanter_mail_link_column) in {expected_case_title, str(case_id)}
+                    ]
+                    mail_resp = alt_resp
+                    mail_view = alt_view
+
+            mail_debug_list.append(
+                {
+                    "case_result_id": case_id,
+                    "expected_case_title": expected_case_title,
+                    "items_raw": len(mail_items),
+                    "items_filtered": len(filtered_mail_items),
+                    "items_filtered_out": filtered_out,
+                    "debug": _build_pleasanter_debug(ple_resp=mail_resp, view=mail_view, items=mail_items),
+                }
+            )
+            if not mail_resp.ok:
+                detail = {
+                    "message": "Pleasanter API error",
+                    "base_url": settings.pleasanter_base_url,
+                    "hint": _pleasanter_hint(settings.pleasanter_base_url or ""),
+                    "checks": [
+                        "PLEASANTER_BASE_URL / PLEASANTER_API_KEY / PLEASANTER_MAIL_SITE_ID を確認",
+                        "PLEASANTER_MAIL_LINK_COLUMN（例: ClassD）を確認",
+                        "PLEASANTER_MAIL_BODY_COLUMN（例: Body）を確認",
+                    ],
+                    "pleasanter": {"summary": summary_debug, "cases": case_debug_list, "mails": mail_debug_list},
+                }
+                raise HTTPException(status_code=502, detail=detail)
+            all_mail_items.extend(filtered_mail_items)
+
+        # ResultId で重複排除（念のため）
+        dedup: dict[str, dict[str, Any]] = {}
+        for it in all_mail_items:
+            rid = it.get("ResultId")
+            key = str(rid) if rid is not None else str(it)
+            dedup.setdefault(key, it)
+
+        items = list(dedup.values())
+        pleasanter_debug: dict[str, Any] = {
+            "summary_result_id": summary_result_id_int,
+            "summary_title": summary_title,
+            "target_case_titles": target_case_titles,
+            "target_case_result_ids": target_case_result_ids,
+            "summary": summary_debug,
+            "cases": case_debug_list,
+            "mails": mail_debug_list,
+        }
 
         stored = 0
         latest_raw: str | None = None
@@ -930,10 +1284,10 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
         latest_mail_result_id: int | None = None
 
         logger.info(
-            "pleasanter fetched case=%s site=%s status=%s items=%s link=%s body=%s",
-            case_result_id_int,
+            "pleasanter fetched summary=%s cases=%s site=%s items=%s link=%s body=%s",
+            summary_result_id_int,
+            target_case_result_ids,
             settings.pleasanter_mail_site_id,
-            ple_resp.status_code,
             len(items),
             settings.pleasanter_mail_link_column,
             settings.pleasanter_mail_body_column,
@@ -949,7 +1303,6 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
 
         try:
             # 会話IDが指定されている場合のみ、その会話の続きとして扱う。
-            # 指定が無い場合は「新規会話」として Dify が返す conversation_id で会話を作成する。
             conv: Conversation | None = None
             if requested_conversation_id:
                 conv = (
@@ -959,10 +1312,19 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
                 )
                 if not conv:
                     raise HTTPException(status_code=404, detail="conversation not found")
-                if conv.pleasanter_case_result_id is not None and conv.pleasanter_case_result_id != case_result_id_int:
-                    raise HTTPException(status_code=400, detail="conversation is linked to a different case_result_id")
+                if conv.pleasanter_case_result_id is not None and conv.pleasanter_case_result_id != summary_result_id_int:
+                    raise HTTPException(status_code=400, detail="conversation is linked to a different summary_result_id")
                 if conv.pleasanter_case_result_id is None:
-                    conv.pleasanter_case_result_id = case_result_id_int
+                    conv.pleasanter_case_result_id = summary_result_id_int
+            else:
+                # 既に同じ案件サマリIDで会話が作成済みなら、それを使い回す（DB制約にも合う）
+                conv = (
+                    session.query(Conversation)
+                    .filter(Conversation.user_id == user.id, Conversation.pleasanter_case_result_id == summary_result_id_int)
+                    .one_or_none()
+                )
+                if conv and summary_title:
+                    conv.title = f"案件サマリ {summary_title}"
 
             email_blocks: list[str] = []
 
@@ -1021,7 +1383,7 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
                     "pleasanter": pleasanter_debug,
                     "body_column": settings.pleasanter_mail_body_column,
                 }
-            raise HTTPException(status_code=404, detail={"message": "No email body found for this case", "debug": debug})
+            raise HTTPException(status_code=404, detail={"message": "No email body found for this summary", "debug": debug})
 
         combined_cleaned = "\n\n".join(email_blocks).strip()
         prompt = build_summarize_prompt(
@@ -1041,14 +1403,29 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
             conv = Conversation(
                 user_id=user.id,
                 dify_conversation_id=dify_conversation_id,
-                title=f"案件 {case_result_id_int}",
-                pleasanter_case_result_id=case_result_id_int,
+                title=f"案件サマリ {summary_title}",
+                pleasanter_case_result_id=summary_result_id_int,
             )
             session.add(conv)
-            session.flush()
+            try:
+                session.flush()
+            except IntegrityError:
+                # 同じ案件サマリIDの会話が並行して作られた等：既存を再取得して続行
+                session.rollback()
+                conv = (
+                    session.query(Conversation)
+                    .filter(Conversation.user_id == user.id, Conversation.pleasanter_case_result_id == summary_result_id_int)
+                    .one_or_none()
+                )
+                if not conv:
+                    raise
             form = FormState(conversation_id=conv.id)
             session.add(form)
             conv.form = form
+        else:
+            # Dify 側が conversation_id を更新して返すケースに備え、追従しておく
+            if conv.dify_conversation_id != dify_conversation_id:
+                conv.dify_conversation_id = dify_conversation_id
 
             # 初回はここでEmailを保存
             for idx, it in enumerate(sorted_items, start=1):
@@ -1080,7 +1457,10 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
 
         result: dict[str, Any] = {
             "conversation_id": conv.dify_conversation_id,
-            "case_result_id": case_result_id_int,
+            "summary_result_id": summary_result_id_int,
+            # 互換（旧UI向け）
+            "case_result_id": summary_result_id_int,
+            "target_case_result_ids": target_case_result_ids,
             "emails_total": len(items),
             "emails_stored": stored,
             "latest_mail_result_id": latest_mail_result_id,
@@ -1103,8 +1483,6 @@ def api_pleasanter_summarize_case(request: Request, payload: dict[str, Any]) -> 
 def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
     """
     フォームデータを Pleasanter まとめサイト（爺）の説明A/B/Cに保存する。
-
-    リンクチェーン: mail → case (via PLEASANTER_MAIL_LINK_COLUMN) → summary (via PLEASANTER_CASE_LINK_COLUMN)
     """
     logger.info(
         "pleasanter save_summary request received conversation_id=%s",
@@ -1116,8 +1494,6 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
 
     if settings.pleasanter_summary_site_id is None:
         raise HTTPException(status_code=400, detail="PLEASANTER_SUMMARY_SITE_ID is not configured")
-    if settings.pleasanter_case_site_id is None:
-        raise HTTPException(status_code=400, detail="PLEASANTER_CASE_SITE_ID is not configured")
 
     conversation_id = payload.get("conversation_id")
     if not conversation_id:
@@ -1138,9 +1514,9 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
             raise HTTPException(status_code=404, detail="conversation not found")
 
         if conv.pleasanter_case_result_id is None:
-            raise HTTPException(status_code=400, detail="conversation has no case_result_id")
+            raise HTTPException(status_code=400, detail="conversation has no summary_result_id")
 
-        case_result_id = conv.pleasanter_case_result_id
+        summary_result_id = int(conv.pleasanter_case_result_id)
 
         # フォームデータを取得
         if not conv.form:
@@ -1157,60 +1533,7 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
             api_version=settings.pleasanter_api_version,
         )
 
-        # 1. case テーブルから summary_result_id を取得
-        logger.info(
-            "pleasanter save_summary: fetching case case_id=%s link_column=%s",
-            case_result_id,
-            settings.pleasanter_case_link_column,
-            extra={"request_id": getattr(request.state, "request_id", None)},
-        )
-        case_view = build_case_view(result_id=case_result_id, link_column=settings.pleasanter_case_link_column)
-        case_resp = ple.get_items(site_id=settings.pleasanter_case_site_id, view=case_view, offset=0, page_size=1)
-
-        if not case_resp.ok:
-            logger.error(
-                "pleasanter save_summary: failed to fetch case error=%s",
-                case_resp.error_message,
-                extra={"request_id": getattr(request.state, "request_id", None)},
-            )
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "message": "Failed to fetch case record from Pleasanter",
-                    "pleasanter_error": case_resp.error_message,
-                }
-            )
-
-        case_items = _extract_items_list(case_resp.data)
-        if not case_items:
-            raise HTTPException(status_code=404, detail=f"Case record {case_result_id} not found")
-
-        case_item = case_items[0]
-        summary_result_id_raw = case_item.get(settings.pleasanter_case_link_column)
-
-        if not summary_result_id_raw:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": f"Case record does not have link to summary (column: {settings.pleasanter_case_link_column})",
-                    "case_result_id": case_result_id,
-                }
-            )
-
-        try:
-            summary_result_id = int(summary_result_id_raw)
-        except Exception:
-            logger.error(
-                "pleasanter save_summary: invalid summary_result_id value=%s",
-                summary_result_id_raw,
-                extra={"request_id": getattr(request.state, "request_id", None)},
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid summary_result_id: {summary_result_id_raw}"
-            )
-
-        # 2. summary テーブルを更新
+        # summary テーブルを更新
         logger.info(
             "pleasanter save_summary: updating summary summary_id=%s summary_len=%s cause_len=%s action_len=%s body_len=%s",
             summary_result_id,
@@ -1246,16 +1569,16 @@ def api_pleasanter_save_summary(request: Request, payload: dict[str, Any]) -> di
             )
 
         logger.info(
-            "pleasanter saved summary case=%s summary=%s",
-            case_result_id,
+            "pleasanter saved summary summary=%s",
             summary_result_id,
             extra={"request_id": getattr(request.state, "request_id", None)},
         )
 
         return {
             "ok": True,
-            "case_result_id": case_result_id,
             "summary_result_id": summary_result_id,
+            # 互換（旧UI向け）
+            "case_result_id": summary_result_id,
             "message": "まとめサイトに保存しました",
         }
 
@@ -1286,6 +1609,8 @@ def api_pleasanter_save_case(request: Request, payload: dict[str, Any]) -> dict[
         )
         if not conv:
             raise HTTPException(status_code=404, detail="conversation not found")
+        if conv.title and str(conv.title).startswith("案件サマリ"):
+            raise HTTPException(status_code=400, detail="この会話は案件サマリ単位のため、/api/pleasanter/save_summary を使用してください")
         if conv.pleasanter_case_result_id is None:
             raise HTTPException(status_code=400, detail="conversation has no case_result_id")
         if not conv.form:

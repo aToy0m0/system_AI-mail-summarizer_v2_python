@@ -1,6 +1,7 @@
-let currentConversationId = '';
+﻿let currentConversationId = '';
 
 const meEl = document.getElementById('me');
+const adminLinkFormEl = document.getElementById('adminLinkForm');
 const conversationsEl = document.getElementById('conversations');
 
 const statusEl = document.getElementById('status');
@@ -285,7 +286,8 @@ function extractCaseIdFromUrl(text) {
 
 async function loadMe() {
   const me = await api('/api/me');
-  if (meEl) meEl.textContent = `ログイン中: ${me.username}`;
+  if (meEl) meEl.textContent = me?.is_admin ? `ログイン中: ${me.username} (管理者)` : `ログイン中: ${me.username}`;
+  if (adminLinkFormEl) adminLinkFormEl.hidden = !me?.is_admin;
 }
 
 function renderConversations(items) {
@@ -346,7 +348,7 @@ async function saveForm() {
 async function saveToCase() {
   if (!currentConversationId) throw new Error('会話を選択してください');
   await saveForm();
-  await api('/api/pleasanter/save_case', {
+  await api('/api/pleasanter/save_summary', {
     method: 'POST',
     body: JSON.stringify({ conversation_id: currentConversationId })
   });
@@ -377,19 +379,21 @@ async function summarizeEmail() {
 }
 
 async function summarizeFromPleasanter(caseIdOverride = '') {
-  const case_result_id = String(caseIdOverride || caseIdEl?.value || '').trim();
-  if (!case_result_id) throw new Error('案件IDを入力してください');
-  if (caseIdEl) caseIdEl.value = case_result_id;
+  const summary_result_id = String(caseIdOverride || caseIdEl?.value || '').trim();
+  if (!summary_result_id) throw new Error('案件サマリIDを入力してください');
+  if (caseIdEl) caseIdEl.value = summary_result_id;
   const data = await api('/api/pleasanter/summarize_case', {
     method: 'POST',
-    body: JSON.stringify({ case_result_id, conversation_id: currentConversationId || '' })
+    body: JSON.stringify({ summary_result_id, conversation_id: currentConversationId || '' })
   });
   currentConversationId = data.conversation_id;
   await refreshConversations();
   await loadForm();
   await loadChatMessages();
   setTab('summary');
-  setStatus(`Pleasanterから要約しました: 案件 ${data.case_result_id}`, 'success');
+  const sid = data.summary_result_id ?? data.case_result_id ?? summary_result_id;
+  const cases = Array.isArray(data.target_case_result_ids) ? data.target_case_result_ids.join(',') : '';
+  setStatus(`Pleasanterから要約しました: 案件サマリ ${sid}${cases ? `（案件: ${cases}）` : ''}`, 'success');
 }
 
 async function sendChatMessage() {
@@ -439,7 +443,7 @@ function renderCaseList(items) {
     div.textContent = `${it.result_id ?? ''} ${it.title ?? ''}`.trim();
     div.addEventListener('click', () => {
       if (caseIdEl) caseIdEl.value = it.result_id ?? '';
-      if (caseInfoEl) caseInfoEl.textContent = `選択中: ${it.result_id ?? ''} ${it.title ?? ''}`.trim();
+      if (caseInfoEl) caseInfoEl.textContent = `選択中(案件サマリ): ${it.result_id ?? ''} ${it.title ?? ''}`.trim();
     });
     caseResultsEl.appendChild(div);
   }
@@ -536,10 +540,10 @@ if (saveFormBtn) {
 if (saveToCaseBtn) {
   saveToCaseBtn.addEventListener('click', async () => {
     setBusy(true);
-    setStatus('Pleasanterへ反映中…', 'loading');
+    setStatus('案件サマリへ反映中…', 'loading');
     try {
       await saveToCase();
-      setStatus('案件へ反映しました', 'success');
+      setStatus('案件サマリへ反映しました', 'success');
     } catch (e) {
       setStatus(`エラー: ${e.message}`, 'error');
     } finally {
@@ -613,18 +617,18 @@ if (caseUrlApplyEl) {
     const raw = String(caseUrlEl?.value || '').trim();
     const caseId = extractCaseIdFromUrl(raw);
     if (!caseId) {
-      setStatus('案件URLからIDを抽出できませんでした', 'error');
+      setStatus('案件サマリURLからIDを抽出できませんでした', 'error');
       return;
     }
     setBusy(true);
-    setStatus('案件URL確認中…', 'loading');
+    setStatus('案件サマリURL確認中…', 'loading');
     try {
       const item = await validateCaseId(caseId);
       if (caseIdEl) caseIdEl.value = item.result_id ?? caseId;
-      if (caseInfoEl) caseInfoEl.textContent = `選択中: ${item.result_id ?? caseId} ${item.title ?? ''}`.trim();
+      if (caseInfoEl) caseInfoEl.textContent = `選択中(案件サマリ): ${item.result_id ?? caseId} ${item.title ?? ''}`.trim();
       await summarizeFromPleasanter(String(item.result_id || caseId));
     } catch (e) {
-      setStatus(`案件URLエラー: ${e.message}`, 'error');
+      setStatus(`案件サマリURLエラー: ${e.message}`, 'error');
     } finally {
       setBusy(false);
     }
@@ -646,3 +650,5 @@ if (caseUrlApplyEl) {
     setStatus(`初期化エラー: ${e.message}`, 'error');
   }
 })();
+
+

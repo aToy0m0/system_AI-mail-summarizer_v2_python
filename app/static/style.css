@@ -394,6 +394,10 @@ button:disabled {
   color: var(--danger);
 }
 
+.success {
+  color: var(--accent-strong);
+}
+
 .pre {
   white-space: pre-wrap;
   word-break: break-word;

@@ -19,3 +19,9 @@ Thumbs.db
 docs/ドキュメント.md
 docs/
 docs/*
+.claude/
+.claude/*
+.codex/
+.codex/*
+.serena/
+.serena/*

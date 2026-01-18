@@ -14,6 +14,9 @@
         <span class="brand">dify-connector</span>
       </div>
       <div class="header-right">
+        <form method="get" action="/admin" id="adminLinkForm" hidden>
+          <button type="submit" class="secondary">管理</button>
+        </form>
         <form method="post" action="/logout">
           <button type="submit" class="secondary">ログアウト</button>
         </form>
@@ -60,14 +63,14 @@
             </select>
           </div>
 
-          <div class="card" id="caseSearchPanel">
-            <div class="row">
-              <h3>案件検索</h3>
+            <div class="card" id="caseSearchPanel">
+              <div class="row">
+              <h3>案件サマリ検索</h3>
               <span class="muted" id="caseCount"></span>
             </div>
-            <input id="caseSearch" placeholder="案件ID / タイトルで検索" />
+            <input id="caseSearch" placeholder="案件サマリID / タイトルで検索" />
             <div id="caseResults" class="list"></div>
-            <label>案件URL</label>
+            <label>案件サマリURL</label>
             <div class="row row-inline">
               <input id="caseUrl" placeholder="http://localhost:50001/items/99" />
               <button id="caseUrlApply" class="secondary">URLで指定</button>
@@ -77,7 +80,7 @@
 
           <div class="card" id="pleasanterPanel">
             <label>
-              案件ID（Pleasanter ResultId）
+              案件サマリID（Pleasanter ResultId）
               <input id="caseId" placeholder="例：12345" />
             </label>
             <div class="row">
@@ -97,35 +100,35 @@
         <div class="tab-content" id="tabSummaryContent">
           <div class="grid">
             <div class="card">
-              <h2>フォーム（案件へ反映）</h2>
+              <h2>フォーム（案件サマリへ反映）</h2>
 
               <label class="with-toggle">
-                <span>概要（{{ case_summary_column }} / 目安200文字以内）</span>
+                <span>{{ case_summary_label }}（{{ case_summary_column }} / 目安200文字以内）</span>
                 <span><input type="checkbox" id="includeSummary" checked /> 修正対象</span>
               </label>
               <textarea id="summary" rows="3"></textarea>
 
               <label class="with-toggle">
-                <span>原因（{{ case_cause_column }} / 目安200文字以内）</span>
+                <span>{{ case_cause_label }}（{{ case_cause_column }} / 目安200文字以内）</span>
                 <span><input type="checkbox" id="includeCause" checked /> 修正対象</span>
               </label>
               <textarea id="cause" rows="3"></textarea>
 
               <label class="with-toggle">
-                <span>処置（{{ case_action_column }} / 目安200文字以内）</span>
+                <span>{{ case_action_label }}（{{ case_action_column }} / 目安200文字以内）</span>
                 <span><input type="checkbox" id="includeAction" checked /> 修正対象</span>
               </label>
               <textarea id="action" rows="3"></textarea>
 
               <label class="with-toggle">
-                <span>内容（{{ case_body_column }} / 制限なし）</span>
+                <span>{{ case_body_label }}（{{ case_body_column }} / 制限なし）</span>
                 <span><input type="checkbox" id="includeBody" checked /> 修正対象</span>
               </label>
               <textarea id="body" rows="10"></textarea>
 
               <div class="row">
                 <button id="saveForm" class="secondary">フォーム保存</button>
-                <button id="saveToCase" class="secondary">案件へ反映</button>
+                <button id="saveToCase" class="secondary">案件サマリへ反映</button>
               </div>
             </div>
 
