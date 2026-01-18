@@ -1,4 +1,12 @@
-﻿let currentConversationId = '';
+// ═══════════════════════════════════════════════════════════════════════════
+// Dify Connector — Main Application Script
+// ═══════════════════════════════════════════════════════════════════════════
+
+let currentConversationId = '';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DOM Elements
+// ─────────────────────────────────────────────────────────────────────────────
 
 const meEl = document.getElementById('me');
 const adminLinkFormEl = document.getElementById('adminLinkForm');
@@ -9,6 +17,7 @@ const statusTextEl = statusEl?.querySelector('.status-text');
 
 const sidebarToggleEl = document.getElementById('sidebarToggle');
 const sidebarBackdropEl = document.getElementById('sidebarBackdrop');
+const themeToggleEl = document.getElementById('themeToggle');
 
 const tabMailBtn = document.getElementById('tabMail');
 const tabSummaryBtn = document.getElementById('tabSummary');
@@ -54,6 +63,43 @@ const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSend');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Theme Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+function initTheme() {
+  const saved = localStorage.getItem('theme');
+  // デフォルトはライトモード（savedがdarkの場合のみダークモードにする）
+  if (saved !== 'dark') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+  updateThemeIcon();
+}
+
+function updateThemeIcon() {
+  if (!themeToggleEl) return;
+  const icon = themeToggleEl.querySelector('.material-icons');
+  if (!icon) return;
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  icon.textContent = isLight ? 'light_mode' : 'dark_mode';
+}
+
+function toggleTheme() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  if (isLight) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'dark');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'light');
+    localStorage.setItem('theme', 'light');
+  }
+  updateThemeIcon();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status & UI State
+// ─────────────────────────────────────────────────────────────────────────────
+
 function setStatus(msg, state = 'idle') {
   if (statusEl) statusEl.dataset.state = state;
   if (statusTextEl) statusTextEl.textContent = msg || '';
@@ -79,6 +125,10 @@ function setBusy(isBusy) {
   if (chatInputEl) chatInputEl.disabled = false;
   updateChatSendButton();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API Helper
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function api(path, options = {}) {
   const method = options.method || 'GET';
@@ -115,6 +165,10 @@ async function api(path, options = {}) {
   return data;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab & Mode Management
+// ─────────────────────────────────────────────────────────────────────────────
+
 function setTab(name) {
   const isMail = name === 'mail';
   if (tabMailBtn) tabMailBtn.classList.toggle('active', isMail);
@@ -129,6 +183,10 @@ function setMailMode(mode) {
   if (pleasanterPanelEl) pleasanterPanelEl.style.display = isPleasanter ? 'block' : 'none';
   if (manualPanelEl) manualPanelEl.style.display = isPleasanter ? 'none' : 'block';
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Form Utilities
+// ─────────────────────────────────────────────────────────────────────────────
 
 function clearForm() {
   if (summaryEl) summaryEl.value = '';
@@ -150,6 +208,10 @@ function formatTime(timestamp) {
   const d = typeof timestamp === 'number' ? new Date(timestamp * 1000) : new Date(timestamp);
   return d.toLocaleString('ja-JP');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat UI
+// ─────────────────────────────────────────────────────────────────────────────
 
 function scrollChatToBottom() {
   if (!chatMessagesEl) return;
@@ -277,6 +339,10 @@ function updateChatSendButton() {
     chatSendBtn.disabled = !currentConversationId || chatInputEl.value.trim() === '' || chatInputEl.disabled;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data Operations
+// ─────────────────────────────────────────────────────────────────────────────
 
 function extractCaseIdFromUrl(text) {
   if (!text) return '';
@@ -410,7 +476,7 @@ async function sendChatMessage() {
   try {
     const payload = { conversation_id: currentConversationId, user_comment: text };
 
-    // 4項目フォーム: 修正対象チェックがONのものだけ送る（サンプルに合わせる）
+    // 4項目フォーム: 修正対象チェックがONのものだけ送る
     if (includeSummaryEl?.checked) payload.summary = summaryEl?.value || '';
     if (includeCauseEl?.checked) payload.cause = causeEl?.value || '';
     if (includeActionEl?.checked) payload.action = actionEl?.value || '';
@@ -433,6 +499,10 @@ async function sendChatMessage() {
     updateChatSendButton();
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Case List
+// ─────────────────────────────────────────────────────────────────────────────
 
 function renderCaseList(items) {
   if (!caseResultsEl) return;
@@ -460,6 +530,16 @@ async function validateCaseId(caseId) {
   return api(`/api/pleasanter/case_lookup?case_result_id=${encodeURIComponent(caseId)}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Event Listeners
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Theme toggle
+if (themeToggleEl) {
+  themeToggleEl.addEventListener('click', toggleTheme);
+}
+
+// Sidebar toggle
 if (sidebarToggleEl) {
   sidebarToggleEl.addEventListener('click', () => {
     document.body.classList.toggle('sidebar-collapsed');
@@ -471,15 +551,18 @@ if (sidebarBackdropEl) {
   });
 }
 
+// Tab switching
 if (tabMailBtn && tabSummaryBtn) {
   tabMailBtn.addEventListener('click', () => setTab('mail'));
   tabSummaryBtn.addEventListener('click', () => setTab('summary'));
 }
 
+// Mail mode
 if (mailModeEl) {
   mailModeEl.addEventListener('change', (e) => setMailMode(e.target.value));
 }
 
+// New conversation
 if (newConversationBtn) {
   newConversationBtn.addEventListener('click', async () => {
     setBusy(true);
@@ -494,6 +577,7 @@ if (newConversationBtn) {
   });
 }
 
+// Summarize
 if (summarizeBtn) {
   summarizeBtn.addEventListener('click', async () => {
     setBusy(true);
@@ -508,6 +592,7 @@ if (summarizeBtn) {
   });
 }
 
+// Fetch from Pleasanter
 if (fetchFromPleasanterBtn) {
   fetchFromPleasanterBtn.addEventListener('click', async () => {
     setBusy(true);
@@ -522,6 +607,7 @@ if (fetchFromPleasanterBtn) {
   });
 }
 
+// Save form
 if (saveFormBtn) {
   saveFormBtn.addEventListener('click', async () => {
     setBusy(true);
@@ -537,6 +623,7 @@ if (saveFormBtn) {
   });
 }
 
+// Save to case
 if (saveToCaseBtn) {
   saveToCaseBtn.addEventListener('click', async () => {
     setBusy(true);
@@ -552,6 +639,7 @@ if (saveToCaseBtn) {
   });
 }
 
+// Chat send
 if (chatSendBtn) {
   chatSendBtn.addEventListener('click', async () => {
     if (!currentConversationId) {
@@ -571,10 +659,11 @@ if (chatSendBtn) {
   });
 }
 
+// Chat input enter key
 if (chatInputEl) {
   chatInputEl.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
-    if (e.shiftKey) return; // 改行
+    if (e.shiftKey) return; // Allow line break with Shift+Enter
     e.preventDefault();
     if (!currentConversationId) return;
     setBusy(true);
@@ -590,10 +679,12 @@ if (chatInputEl) {
   });
 }
 
+// Chat input change
 if (chatInputEl) {
   chatInputEl.addEventListener('input', () => updateChatSendButton());
 }
 
+// Clear chat
 if (clearChatBtn) {
   clearChatBtn.addEventListener('click', () => {
     clearChat();
@@ -603,6 +694,7 @@ if (clearChatBtn) {
   });
 }
 
+// Case search
 if (caseSearchEl) {
   let timer = null;
   caseSearchEl.addEventListener('input', (e) => {
@@ -612,6 +704,7 @@ if (caseSearchEl) {
   });
 }
 
+// Case URL apply
 if (caseUrlApplyEl) {
   caseUrlApplyEl.addEventListener('click', async () => {
     const raw = String(caseUrlEl?.value || '').trim();
@@ -635,8 +728,13 @@ if (caseUrlApplyEl) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Initialization
+// ─────────────────────────────────────────────────────────────────────────────
+
 (async function init() {
   try {
+    initTheme();
     setStatus('初期化中…', 'loading');
     await loadMe();
     await refreshConversations();
@@ -650,5 +748,3 @@ if (caseUrlApplyEl) {
     setStatus(`初期化エラー: ${e.message}`, 'error');
   }
 })();
-
-

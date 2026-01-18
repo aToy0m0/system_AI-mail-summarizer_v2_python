@@ -3,22 +3,33 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>dify-connector</title>
+    <title>Dify Connector</title>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body class="sidebar-collapsed">
     <header class="header">
       <div class="header-left">
-        <button id="sidebarToggle" class="icon-button" aria-label="サイドバーを開閉">≡</button>
-        <span class="brand">dify-connector</span>
+        <button id="sidebarToggle" class="icon-button" aria-label="サイドバーを開閉">
+          <span class="material-icons">menu</span>
+        </button>
+        <span class="brand">Dify Connector</span>
       </div>
       <div class="header-right">
+        <button id="themeToggle" class="theme-toggle" aria-label="テーマ切替">
+          <span class="material-icons">dark_mode</span>
+        </button>
         <form method="get" action="/admin" id="adminLinkForm" hidden>
-          <button type="submit" class="secondary">管理</button>
+          <button type="submit" class="secondary">
+            <span class="material-icons">settings</span>
+            管理
+          </button>
         </form>
         <form method="post" action="/logout">
-          <button type="submit" class="secondary">ログアウト</button>
+          <button type="submit" class="secondary">
+            <span class="material-icons">logout</span>
+            ログアウト
+          </button>
         </form>
       </div>
     </header>
@@ -27,9 +38,12 @@
       <aside class="sidebar">
         <div class="row">
           <div class="muted" id="me"></div>
-          <button id="newConversation" class="secondary">新規会話</button>
+          <button id="newConversation" class="secondary">
+            <span class="material-icons">add</span>
+            新規会話
+          </button>
         </div>
-        <h2>会話</h2>
+        <h2>会話履歴</h2>
         <div id="conversations" class="list"></div>
       </aside>
       <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
@@ -63,8 +77,8 @@
             </select>
           </div>
 
-            <div class="card" id="caseSearchPanel">
-              <div class="row">
+          <div class="card" id="caseSearchPanel">
+            <div class="row">
               <h3>案件サマリ検索</h3>
               <span class="muted" id="caseCount"></span>
             </div>
@@ -84,15 +98,21 @@
               <input id="caseId" placeholder="例：12345" />
             </label>
             <div class="row">
-              <button id="fetchFromPleasanter" class="secondary">Pleasanterから取得→要約</button>
+              <button id="fetchFromPleasanter">
+                <span class="material-icons">download</span>
+                Pleasanterから取得→要約
+              </button>
             </div>
           </div>
 
           <div class="card" id="manualPanel">
-            <h2>手動貼り付け</h2>
+            <h3>手動貼り付け</h3>
             <textarea id="emailText" rows="8" placeholder="ここにメール本文を貼り付け"></textarea>
             <div class="row">
-              <button id="summarize">要約する</button>
+              <button id="summarize">
+                <span class="material-icons">summarize</span>
+                要約する
+              </button>
             </div>
           </div>
         </div>
@@ -127,8 +147,14 @@
               <textarea id="body" rows="10"></textarea>
 
               <div class="row">
-                <button id="saveForm" class="secondary">フォーム保存</button>
-                <button id="saveToCase" class="secondary">案件サマリへ反映</button>
+                <button id="saveForm" class="secondary">
+                  <span class="material-icons">save</span>
+                  フォーム保存
+                </button>
+                <button id="saveToCase">
+                  <span class="material-icons">publish</span>
+                  案件サマリへ反映
+                </button>
               </div>
             </div>
 

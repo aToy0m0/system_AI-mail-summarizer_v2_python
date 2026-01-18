@@ -3,20 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ユーザー管理</title>
+    <title>ユーザー管理 - Dify Connector</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
-  <body>
+  <body class="admin-page">
     <header class="header">
       <div class="header-left">
         <form method="get" action="/">
-          <button type="submit" class="secondary">戻る</button>
+          <button type="submit" class="secondary">
+            <span class="material-icons">arrow_back</span>
+            戻る
+          </button>
         </form>
         <span class="brand">管理コンソール</span>
       </div>
       <div class="header-right">
+        <button id="themeToggle" class="theme-toggle" aria-label="テーマ切替">
+          <span class="material-icons">dark_mode</span>
+        </button>
         <form method="post" action="/logout">
-          <button type="submit" class="secondary">ログアウト</button>
+          <button type="submit" class="secondary">
+            <span class="material-icons">logout</span>
+            ログアウト
+          </button>
         </form>
       </div>
     </header>
@@ -24,6 +34,7 @@
     <main class="container">
       <h1>ユーザー管理</h1>
       <p class="muted">ログイン中: {{ me.username }} ({{ me.role }})</p>
+
       {% if error %}
       <p class="error">{{ error }}</p>
       {% endif %}
@@ -31,12 +42,12 @@
       <p class="success">{{ ok }}</p>
       {% endif %}
 
-      <section class="card">
+      <section class="card" style="margin-top: 1.5rem;">
         <h2>ユーザー作成</h2>
         <form method="post" action="/admin/users/create">
           <label>
             ID
-            <input name="username" autocomplete="off" required />
+            <input name="username" autocomplete="off" required placeholder="ユーザーIDを入力" />
           </label>
           <label>
             権限
@@ -47,22 +58,28 @@
           </label>
           <label>
             初期パスワード
-            <input name="password" type="password" autocomplete="new-password" required />
+            <input name="password" type="password" autocomplete="new-password" required placeholder="初期パスワードを入力" />
           </label>
           <div class="row row-inline">
-            <button type="submit">作成</button>
+            <button type="submit">
+              <span class="material-icons">person_add</span>
+              作成
+            </button>
           </div>
         </form>
       </section>
 
-      <h2 style="margin-top: 16px">ユーザー一覧</h2>
+      <h2 style="margin-top: 2rem;">ユーザー一覧</h2>
       <div class="list">
         {% for u in users %}
-        <div class="card">
-          <div class="row">
-            <div>
-              <strong>{{ u.username }}</strong>
-              <span class="muted">({{ u.role }})</span>
+        <div class="card user-card">
+          <div class="user-header">
+            <div class="user-info">
+              <div class="user-avatar">{{ u.username[0] }}</div>
+              <div>
+                <strong>{{ u.username }}</strong>
+                <span class="muted">({{ u.role }})</span>
+              </div>
             </div>
             <span class="muted">id={{ u.id }}</span>
           </div>
@@ -70,16 +87,53 @@
 
           <form method="post" action="/admin/users/{{ u.id }}/password" class="row row-inline">
             <input name="new_password" type="password" autocomplete="new-password" placeholder="新しいパスワード" required />
-            <button type="submit" class="secondary">パスワード変更</button>
+            <button type="submit" class="secondary">
+              <span class="material-icons">key</span>
+              パスワード変更
+            </button>
           </form>
 
           <form method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('ユーザーを削除します。よろしいですか？');">
-            <button type="submit" class="secondary">削除</button>
+            <button type="submit" class="secondary" style="color: var(--error);">
+              <span class="material-icons">delete</span>
+              削除
+            </button>
           </form>
         </div>
         {% endfor %}
       </div>
     </main>
+
+    <script>
+      // Theme toggle functionality (default: light)
+      (function() {
+        const saved = localStorage.getItem('theme');
+        if (saved !== 'dark') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+
+        const toggle = document.getElementById('themeToggle');
+        if (toggle) {
+          const updateIcon = () => {
+            const icon = toggle.querySelector('.material-icons');
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            icon.textContent = isLight ? 'light_mode' : 'dark_mode';
+          };
+          updateIcon();
+
+          toggle.addEventListener('click', () => {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            if (isLight) {
+              document.documentElement.removeAttribute('data-theme');
+              localStorage.setItem('theme', 'dark');
+            } else {
+              document.documentElement.setAttribute('data-theme', 'light');
+              localStorage.setItem('theme', 'light');
+            }
+            updateIcon();
+          });
+        }
+      })();
+    </script>
   </body>
 </html>
-
